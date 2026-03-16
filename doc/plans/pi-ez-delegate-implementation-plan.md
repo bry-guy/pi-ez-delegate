@@ -144,11 +144,12 @@ Target behavior:
 1. wait until current agent is idle
 2. capture current session file and current leaf
 3. create a branched session file for the worker
-4. derive worker cwd
-5. if same repo and worktree enabled, create a worktree for the worker
-6. pick an adapter (tmux only for v1)
-7. launch `pi --session <forked-session> <task>` in the chosen target
-8. emit a visible result back into the current session
+4. sanitize copied branch entries so replay remains valid
+5. derive worker cwd
+6. if same repo and worktree enabled, create a worktree for the worker
+7. pick an adapter (tmux only for v1)
+8. launch `pi --session <forked-session> <task>` in the chosen target
+9. emit a visible result back into the current session
 
 Suggested result payload:
 - worker name
@@ -219,6 +220,12 @@ Open question to resolve while implementing:
 - or the lower-level session manager branch extraction APIs for more control over naming and launch timing.
 
 Because the parent session must remain where it is, prefer the approach that creates a new session file without forcibly switching the current session away from the user's current view.
+
+Replay safety requirements:
+- do not leave orphaned `toolResult` entries in the child session
+- do not break `parentId` chains when filtering copied entries
+- if multiple `delegate_task` calls happen in the same assistant turn, do not remove the entire trailing tool-call message if earlier sibling results have already been persisted
+- either exclude only the currently executing `delegate_task` invocation, or preserve the related assistant/tool-result chain coherently
 
 ## Worktree strategy
 
@@ -355,6 +362,8 @@ That means the package should make multiple sequential calls to `delegate_task` 
 - [x] implement robust `/ezdg` arg parsing and validation
 - [x] wait for idle before mutating session / launching worker
 - [x] create a forked worker session file without hijacking the current session
+- [ ] sanitize copied branch history so forked session replay remains valid
+- [ ] add regression coverage for repeated delegation from the same coordinator session, including multiple `delegate_task` calls in one assistant turn
 - [x] set a sensible worker session name
 - [x] build delegated task prompt from user input
 - [x] select adapter (tmux only initially)

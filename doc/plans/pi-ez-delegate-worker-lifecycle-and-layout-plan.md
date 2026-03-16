@@ -185,6 +185,18 @@ Why this matters:
 - nested delegation should remember which pane initiated the current worker
 - pane relaunch/open behavior should not depend on whatever pane happens to be focused later
 
+### Forked session replay safety
+
+When creating a forked worker session file:
+- do not leave orphaned `toolResult` entries behind
+- do not break `parentId` chains when filtering entries
+- do not strip an entire trailing assistant tool-call message if earlier sibling tool calls in that same message already have persisted results
+- either exclude only the **current** `delegate_task` invocation from copied history, or preserve the related assistant/tool-result chain coherently
+
+Regression coverage should include:
+- two delegated launches from separate coordinator turns
+- two delegated launches from the same assistant turn where multiple `delegate_task` calls were made
+
 ### Suggested storage
 
 ```text
@@ -569,6 +581,8 @@ Those are premature because this phase still launches one worker at a time.
 - [ ] refactor `/ezdg` into subcommands
 - [ ] add persistent worker registry file
 - [ ] keep session custom entries for launch history
+- [ ] preserve forked-session replay safety when copying branch entries
+- [ ] add regression tests for sequential and same-turn multi-`delegate_task` launches
 - [ ] migrate current launch flow into `/ezdg start`
 
 ### Phase 2: worker management
@@ -744,13 +758,14 @@ Implement this first and stop:
 
 1. `/ezdg start`, `/ezdg list`, `/ezdg open`, `/ezdg attach`, `/ezdg clean`
 2. persistent worker registry
-3. tmux live/dead detection
-4. safe dead-worker cleanup
-5. single-rail pane layout config with:
+3. forked-session replay safety for delegated child sessions
+4. tmux live/dead detection
+5. safe dead-worker cleanup
+6. single-rail pane layout config with:
    - `defaultPaneSplit`
    - `minPaneColumns = 180`
    - `minPaneRows = 28`
-6. stored origin pane/window metadata for pane relaunch and explicit split targeting
+7. stored origin pane/window metadata for pane relaunch and explicit split targeting
 
 That gets worker lifecycle under control without prematurely building a full tmux layout manager.
 
