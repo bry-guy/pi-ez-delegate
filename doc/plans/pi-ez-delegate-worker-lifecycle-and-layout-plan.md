@@ -165,8 +165,25 @@ Keep both:
 
 1. **session custom entries**
    - for conversation-local history
+   - for lightweight active delegate state that can be inherited by nested workers
 2. **persistent registry file**
    - for durable worker management
+
+### Delegate session state
+
+Add a small active delegate state entry, for example `pi-ez-delegate-state`, that carries the pane/window anchor information needed by child sessions.
+
+At minimum it should include:
+- worker id
+- target mode
+- origin pane id for pane launches
+- origin window id for pane launches
+- current live target id when relevant
+
+Why this matters:
+- registry data is durable, but it is not automatically inherited by a forked child session
+- nested delegation should remember which pane initiated the current worker
+- pane relaunch/open behavior should not depend on whatever pane happens to be focused later
 
 ### Suggested storage
 
@@ -191,7 +208,8 @@ A record should include:
 - target id
 - pane/window/session ids as applicable
 - window id for pane launches
-- origin pane id when relevant
+- origin pane id for pane launches
+- origin window id for pane launches
 - layout metadata
 - model override, if any
 
@@ -294,6 +312,8 @@ It should not relaunch a dead worker.
 - relaunch if the worker is dead
 - reuse the stored session file
 - reuse the stored worktree/cwd if still present
+- reuse the stored origin pane id for pane relaunches
+- if the stored origin pane no longer exists and the requested target is `pane`, fail clearly and recommend `--target window` or `--target session`
 - update the registry with the new target info
 
 This makes `open` the idempotent “make this worker usable” command.
@@ -438,13 +458,20 @@ If target is `window` or `session`, reject `--split` clearly.
 
 ## Revised auto algorithm
 
-### Step 1: identify the active tmux window
+### Step 1: identify the remembered origin pane and its window
 
-All pane auto-layout decisions are scoped to the **current tmux window**.
+All pane auto-layout decisions are scoped to the **window that contains the remembered origin pane for this delegation**, not whichever pane happens to be focused when the command runs.
 
-### Step 2: look for a live delegate rail in that window
+Rules:
+- if the current session already has active delegate state with an `originPaneId`, use that pane as the anchor
+- otherwise use the current `TMUX_PANE` as the origin pane and persist it into the worker/session metadata
+- if the origin pane no longer exists, refuse pane launch and recommend `--target window` or `--target session`
 
-Use registry data plus tmux inspection to determine whether this window already has a delegate rail created by `pi-ez-delegate`.
+### Step 2: look for a live delegate rail in the origin window
+
+Use registry data plus tmux inspection to determine whether the **origin window** already has a delegate rail created by `pi-ez-delegate`.
+
+Do not infer rail state from the currently focused pane.
 
 If the state is ambiguous:
 - fall back to horizontal behavior **only if** it still satisfies `minPaneRows`
@@ -460,9 +487,11 @@ windowWidth >= 2 * minPaneColumns
 
 then:
 - create the first delegate rail with a **vertical split**
+- target the remembered `originPaneId` for that split
 
 Else:
-- if the current pane height is at least `2 * minPaneRows`, use a **horizontal split**
+- if the origin pane height is at least `2 * minPaneRows`, use a **horizontal split**
+- target the remembered `originPaneId` for that split
 - otherwise refuse the pane launch and recommend `--target window` or `--target session`
 
 ### Step 4: if a delegate rail already exists
@@ -479,6 +508,11 @@ then:
 - split that pane **horizontally**
 
 This keeps the delegate rail stacked and tends to preserve the largest usable panes over time.
+
+Important:
+- explicit pane splits should always use an explicit tmux target derived from stored metadata, never the implicit currently focused pane
+- for the first split, that target is the remembered `originPaneId`
+- for later rail growth, that target is the chosen live pane inside the rail that belongs to the same origin window/worker layout
 
 ### Step 5: if the rail is full
 
@@ -630,6 +664,7 @@ Constraints:
 - do not edit extensions/delegate.js
 - avoid large edits to lib/delegate.js
 - implement the conservative single-rail layout approach only
+- remember the tmux origin pane for pane launches and use explicit split targets instead of relying on the currently focused pane
 - respect minPaneColumns=180 and minPaneRows semantics from the plan
 
 Deliverable:
@@ -680,6 +715,7 @@ Goals:
 - keep delegate_task working
 - add start, list, open, attach, clean, and help
 - integrate registry/config/tmux/layout modules from wave one
+- preserve and use stored originPaneId/originWindowId for pane relaunch and layout decisions
 
 Constraints:
 - do not redesign the plan
@@ -714,6 +750,7 @@ Implement this first and stop:
    - `defaultPaneSplit`
    - `minPaneColumns = 180`
    - `minPaneRows = 28`
+6. stored origin pane/window metadata for pane relaunch and explicit split targeting
 
 That gets worker lifecycle under control without prematurely building a full tmux layout manager.
 
