@@ -2,6 +2,8 @@
 
 Status: command/tool MVP implemented with tmux launch and same-repo worktree support.
 
+Follow-up design work for worker lifecycle, cleanup, and layout now lives in `doc/plans/pi-ez-delegate-worker-lifecycle-and-layout-plan.md`.
+
 ## Goal
 
 Build a pi package that lets the current pi session delegate work into forked worker sessions.

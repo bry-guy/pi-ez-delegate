@@ -43,7 +43,10 @@ Each delegated task should include:
 - the expected deliverable (code, plan, tests, notes)
 
 ## Notes
-- The user-facing command is `/ezdg ...`.
+- The user-facing command family is `/ezdg ...`.
+- The current launch form is `/ezdg <task>`.
+- Future management commands should stay under the same `/ezdg ...` namespace.
 - The LLM-facing tool is `delegate_task`.
 - `pi-ez-delegate` forks the current conversation, can create a same-repo worktree, and launches a worker in tmux.
+- Do not suggest the old `/delegate` name.
 - Use delegation for independence, not for tightly-coupled parallel edits.
