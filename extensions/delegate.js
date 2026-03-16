@@ -2,10 +2,15 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
+  DELEGATE_COMMAND,
+  DELEGATE_MESSAGE_TYPE,
+  DELEGATE_REGISTRY_ENTRY_TYPE,
   DELEGATE_TARGETS,
+  delegateTask,
   formatDelegateHelp,
-  formatPlaceholderResult,
-  normalizeTarget,
+  formatDelegateLaunchResult,
+  getForkBranchEntries,
+  getParentEffectiveCwd,
   parseDelegateCommandInput,
 } from "../lib/delegate.js";
 
@@ -14,7 +19,9 @@ const delegateSchema = Type.Object({
   target: Type.Optional(StringEnum(DELEGATE_TARGETS)),
   name: Type.Optional(Type.String({ description: "Optional human-friendly worker name" })),
   cwd: Type.Optional(Type.String({ description: "Optional working directory for the delegated worker" })),
-  createWorktree: Type.Optional(Type.Boolean({ description: "Create or attach an isolated worktree for same-repo delegation. Defaults to true." })),
+  createWorktree: Type.Optional(
+    Type.Boolean({ description: "Create an isolated worktree for same-repo delegation. Defaults to true." }),
+  ),
 });
 
 function filterCompletionItems(prefix, items) {
@@ -50,60 +57,101 @@ function getDelegateArgumentCompletions(prefix) {
   return null;
 }
 
-export default function (pi) {
-  pi.registerCommand("delegate", {
-    description: "Fork the current session into a delegated worker (scaffold placeholder)",
+function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
+  const parentCwd = getParentEffectiveCwd(ctx.cwd, rawBranchEntries);
+  return {
+    parentCwd,
+    parentSessionFile: ctx.sessionManager.getSessionFile(),
+    headerVersion: ctx.sessionManager.getHeader()?.version,
+    branchEntries: getForkBranchEntries(rawBranchEntries, {
+      excludeTrailingDelegateToolCall: options.excludeTrailingDelegateToolCall,
+    }),
+    getLabel: (entryId) => ctx.sessionManager.getLabel(entryId),
+    env: process.env,
+    piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
+  };
+}
+
+function sendDelegateMessage(pi, content, details) {
+  pi.sendMessage({
+    customType: DELEGATE_MESSAGE_TYPE,
+    content,
+    display: true,
+    details,
+  });
+}
+
+export default function delegateExtension(pi) {
+  pi.registerCommand(DELEGATE_COMMAND, {
+    description: "Fork the current session into a tmux worker, with same-repo worktrees by default",
     getArgumentCompletions: getDelegateArgumentCompletions,
     handler: async (args, ctx) => {
-      const request = parseDelegateCommandInput(args);
-      const text = request.help ? formatDelegateHelp() : formatPlaceholderResult(request);
-      if (ctx.hasUI) {
-        ctx.ui.notify("pi-ez-delegate scaffold only; see implementation plan", "info");
+      const parsed = parseDelegateCommandInput(args);
+      if (parsed.request.help) {
+        sendDelegateMessage(pi, formatDelegateHelp(), { status: "help" });
+        return;
       }
-      pi.sendMessage({
-        customType: "pi-ez-delegate",
-        content: text,
-        display: true,
-        details: {
-          status: "not-implemented",
-          request,
-        },
-      });
+      if (parsed.errors.length > 0) {
+        const content = [`/${DELEGATE_COMMAND} could not parse the request.`, "", ...parsed.errors, "", formatDelegateHelp()].join("\n");
+        if (ctx.hasUI) ctx.ui.notify(parsed.errors[0], "error");
+        sendDelegateMessage(pi, content, { status: "error", errors: parsed.errors });
+        return;
+      }
+
+      await ctx.waitForIdle();
+
+      const rawBranchEntries = ctx.sessionManager.getBranch();
+      try {
+        const result = await delegateTask(parsed.request, buildRuntimeContext(ctx, rawBranchEntries));
+        pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
+        if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} in tmux ${result.launch.mode}`, "success");
+        sendDelegateMessage(pi, formatDelegateLaunchResult(result), result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (ctx.hasUI) ctx.ui.notify(message, "error");
+        sendDelegateMessage(pi, message, { status: "error" });
+      }
     },
   });
 
   pi.registerTool({
     name: "delegate_task",
     label: "Delegate Task",
-    description: "Fork the current session, optionally create a worktree, and launch a delegated worker in a pane, window, or session.",
-    promptSnippet: "Delegate a self-contained task into a forked worker session when work can proceed independently.",
+    description: "Fork the current session, optionally create a same-repo worktree, and launch a delegated worker in tmux.",
+    promptSnippet: "Delegate an independent task into a forked tmux worker session.",
     promptGuidelines: [
-      "Use this tool only for independent workstreams with clear file or subsystem ownership.",
-      "Default to target pane unless the user explicitly asks for a different launch mode.",
+      "Use this tool only for independent workstreams with clear ownership boundaries.",
+      "Default to target pane unless the user explicitly asks for a different tmux target.",
       "Prefer createWorktree=true for same-repo coding work so delegated workers do not collide in the same checkout.",
+      `The user-facing slash command is /${DELEGATE_COMMAND}.`,
     ],
     parameters: delegateSchema,
-    async execute(_toolCallId, params) {
-      const request = {
-        task: params.task,
-        target: normalizeTarget(params.target),
-        name: params.name,
-        cwd: params.cwd,
-        createWorktree: params.createWorktree ?? true,
-      };
-      return {
-        content: [{ type: "text", text: formatPlaceholderResult(request) }],
-        details: {
-          status: "not-implemented",
-          request,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const rawBranchEntries = ctx.sessionManager.getBranch();
+      const result = await delegateTask(
+        {
+          task: params.task,
+          target: params.target,
+          name: params.name,
+          cwd: params.cwd,
+          createWorktree: params.createWorktree ?? true,
         },
+        buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true }),
+      );
+
+      pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
+
+      return {
+        content: [{ type: "text", text: formatDelegateLaunchResult(result) }],
+        details: result,
       };
     },
   });
 
-  pi.registerMessageRenderer("pi-ez-delegate", (message, options, theme) => {
-    let text = theme.fg("accent", "[pi-ez-delegate] ");
-    text += String(message.content);
+  pi.registerMessageRenderer(DELEGATE_MESSAGE_TYPE, (message, options, theme) => {
+    const status = message.details?.status;
+    const color = status === "error" ? "error" : status === "success" ? "success" : "accent";
+    let text = theme.fg(color, `[${DELEGATE_COMMAND}] `) + String(message.content);
     if (options.expanded && message.details) {
       text += "\n\n" + theme.fg("dim", JSON.stringify(message.details, null, 2));
     }

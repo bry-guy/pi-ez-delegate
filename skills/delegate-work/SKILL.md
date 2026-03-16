@@ -5,19 +5,19 @@ description: Use when a user request contains independent workstreams that shoul
 
 # Delegate Work
 
-Use the `delegate_task` tool from `pi-ez-delegate` when the user asks for parallelizable implementation work and the work can be cleanly split.
+Use the `delegate_task` tool from `pi-ez-delegate` when a request can be split into independent workstreams.
 
 ## When to use this
 - The user gives multiple independent workstreams
 - A task can be partitioned by subsystem, repository, or file ownership
 - The user explicitly asks to fan work out into delegated workers
-- The current session should remain focused on integration, coordination, or higher-level decision making
+- The current session should remain focused on integration, coordination, or review
 
 ## When **not** to use this
 - Multiple tasks need to edit the same files immediately
 - Workstreams are highly sequential and depend on unsettled interfaces
 - The user wants all work to stay inside the current session
-- The tool reports that delegation is not implemented yet
+- tmux is unavailable for the current pi session
 
 ## Rules
 1. Delegate only self-contained work with clear ownership boundaries.
@@ -32,7 +32,7 @@ Use the `delegate_task` tool from `pi-ez-delegate` when the user asks for parall
 2. Keep one stream local if integration or coordination is still needed.
 3. Call `delegate_task` once per worker-worthy stream.
 4. Give each delegated prompt a crisp scope, such as one subsystem or one repo.
-5. If delegation is unavailable or reports scaffold-only status, continue locally and tell the user the delegation package still needs implementation.
+5. If tmux is unavailable, continue locally and explain why delegation could not launch.
 
 ## Prompt shape for delegated workers
 Each delegated task should include:
@@ -43,7 +43,7 @@ Each delegated task should include:
 - the expected deliverable (code, plan, tests, notes)
 
 ## Notes
-- The user-facing command is `/delegate ...`.
+- The user-facing command is `/ezdg ...`.
 - The LLM-facing tool is `delegate_task`.
-- `pi-ez-delegate` is intended to fork the current conversation, optionally create a worktree, and launch a new worker in a multiplexer target.
-- In the current scaffold stage, the tool may only return placeholder output.
+- `pi-ez-delegate` forks the current conversation, can create a same-repo worktree, and launches a worker in tmux.
+- Use delegation for independence, not for tightly-coupled parallel edits.

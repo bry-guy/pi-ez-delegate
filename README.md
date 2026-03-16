@@ -2,52 +2,95 @@
 
 `pi-ez-delegate` is a shareable [pi](https://pi.dev) package for delegating work out of the **current pi session** into forked worker sessions.
 
-The intended flow is:
+The core flow is:
 
 - keep working in the current pi session
-- run `/delegate <task>` or let the agent call `delegate_task`
-- fork the current conversation context
-- optionally create an isolated git worktree for the worker
-- launch a new worker in a pluggable multiplexer target
-  - default: tmux split
-  - optional later: tmux window / tmux session / zellij adapters
+- run `/ezdg <task>` or let the agent call `delegate_task`
+- fork the current conversation context into a worker session file
+- default to an isolated same-repo git worktree when appropriate
+- launch the worker in tmux
+  - default: detached pane split
+  - optional: detached window or detached session
+- return a switch hint so you can jump to that worker later
 
 ## Status
 
-This repository is currently a scaffold plus implementation plan.
-
-Included today:
-- **Extension stub:** registers `/delegate` and `delegate_task`
-- **Skill stub:** teaches the agent when delegation is appropriate
-- **Plan:** `doc/plans/pi-ez-delegate-implementation-plan.md`
+Implemented today:
+- **Command:** `/ezdg ...`
+- **Tool:** `delegate_task`
+- **tmux adapter:** pane, window, and session launch targets
+- **Session forking:** worker gets a forked session file with the current conversation branch
+- **Same-repo worktrees:** enabled by default unless `--no-worktree` is used
+- **Launch records:** persisted as custom session entries for later follow-up features
 
 Not implemented yet:
-- actual session forking
-- worktree creation/attachment
-- tmux spawning
-- worker registry / attach helpers
+- worker list / reattach slash commands
 - zellij adapter
+- completion signaling back from workers to parents
 
-## Design goals
-
-- Keep the extension as multiplexer-agnostic as possible
-- Follow the same project structure and release flow as `pi-ez-worktree`
-- Start with a single core UX:
-  - `/delegate <task>`
-- Default to a new tmux split, but allow window/session modes later
-- Prefer isolated worktrees when delegating inside the same git repo
-- Make it possible for an agent to delegate independent workstreams automatically
-
-## Intended UX
+## Command
 
 ```text
-/delegate implement the GH Actions publish pipeline
-/delegate --target window wire up castaway-web service auth middleware
+/ezdg [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
 ```
 
-And for agent use via tool:
+Examples:
+
+```text
+/ezdg implement the GH Actions publish pipeline
+/ezdg --target window wire up castaway-web service auth middleware
+/ezdg --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
+```
+
+Defaults:
+- `target = pane`
+- `createWorktree = true` for same-repo delegation
+- `cwd = current session cwd`
+
+## Tool
+
+The extension also exposes an LLM-facing tool:
 
 - `delegate_task`
+
+Use it for independent workstreams with clear ownership boundaries.
+
+## tmux behavior
+
+v1 requires running pi **inside tmux**.
+
+Launch modes:
+- `pane` → `tmux split-window -d ...`
+- `window` → `tmux new-window -d ...`
+- `session` → `tmux new-session -d ...`
+
+Each launch returns:
+- worker name
+- worker session file path
+- effective cwd
+- worktree details when one was created
+- tmux target identifier
+- a switch hint such as `tmux select-pane -t %17`
+
+## Worktree behavior
+
+When the delegated cwd is inside the **same git repo** as the parent session, `pi-ez-delegate` creates a fresh worktree by default.
+
+That keeps delegated workers from colliding in the same checkout.
+
+If the delegated cwd is in a different repo or not in git, worktree creation is skipped cleanly.
+
+## Session behavior
+
+The worker session is a **forked session file**, not a blank new run.
+
+It inherits the current conversation branch, but intentionally drops non-context custom extension state so workers do not accidentally restore parent runtime state such as active `pi-ez-worktree` routing.
+
+The worker session gets its own display name in the form:
+
+```text
+ezdg:<worker-name>
+```
 
 ## Install
 
@@ -65,10 +108,22 @@ If pi is already running, install the package and then run `/reload` in that pi 
 
 ## Local development
 
-This repo includes a tiny `mise.toml` for a smoke check:
+Syntax check:
 
 ```bash
 mise run check
+```
+
+Unit tests:
+
+```bash
+mise run test
+```
+
+tmux smoke test:
+
+```bash
+mise run smoke
 ```
 
 ## Release process

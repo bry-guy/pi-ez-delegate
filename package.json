@@ -14,7 +14,9 @@
   "keywords": ["pi-package", "pi", "delegate", "tmux", "zellij", "worktree"],
   "license": "MIT",
   "scripts": {
-    "check": "node --check extensions/delegate.js && node --check lib/delegate.js"
+    "check": "node --check extensions/delegate.js && node --check lib/delegate.js && node --check test/delegate.test.js && node --check test/smoke-tmux.js",
+    "test": "node --test test/delegate.test.js",
+    "test:smoke": "node test/smoke-tmux.js"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",

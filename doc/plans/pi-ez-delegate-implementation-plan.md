@@ -1,6 +1,6 @@
 # pi-ez-delegate implementation plan
 
-Status: scaffold only, not implemented yet.
+Status: command/tool MVP implemented with tmux launch and same-repo worktree support.
 
 ## Goal
 
@@ -9,7 +9,7 @@ Build a pi package that lets the current pi session delegate work into forked wo
 Primary UX:
 
 ```text
-/delegate <task>
+/ezdg <task>
 ```
 
 Expected behavior:
@@ -40,7 +40,7 @@ The package should be structured like `pi-ez-worktree`:
 ### User-facing command
 
 ```text
-/delegate [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
+/ezdg [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
 ```
 
 Defaults:
@@ -51,16 +51,16 @@ Defaults:
 Initial examples:
 
 ```text
-/delegate implement the GH Actions publish pipeline
-/delegate --target window wire up bot-to-web auth middleware
-/delegate --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
+/ezdg implement the GH Actions publish pipeline
+/ezdg --target window wire up bot-to-web auth middleware
+/ezdg --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
 ```
 
 ### LLM-facing tool
 
 `delegate_task`
 
-This is required so the agent can delegate on its own instead of relying on the user to type `/delegate` manually.
+This is required so the agent can delegate on its own instead of relying on the user to type `/ezdg` manually.
 
 ## Design principles
 
@@ -111,7 +111,7 @@ Do not blur these concerns together.
 Keep code organized so the extension file is mostly surface area and orchestration:
 
 - `extensions/delegate.js`
-  - registers `/delegate`
+  - registers `/ezdg`
   - registers `delegate_task`
   - renders user-visible results
 - `lib/delegate.js`
@@ -134,9 +134,9 @@ Done in this repository:
 - skill stub
 - implementation plan
 
-### Phase 1: `/delegate` command MVP (manual user flow)
+### Phase 1: `/ezdg` command MVP (manual user flow)
 
-Implement `/delegate` as an interactive command first.
+Implement `/ezdg` as an interactive command first.
 
 Target behavior:
 1. wait until current agent is idle
@@ -195,10 +195,10 @@ Registry record should contain:
 
 ### Phase 4: attach/list helpers
 
-After `/delegate` exists, add:
-- `/delegate-list`
-- `/delegate-attach <name-or-id>`
-- maybe `/delegate-open`
+After `/ezdg` exists, add:
+- `/ezdg-list`
+- `/ezdg-attach <name-or-id>`
+- maybe `/ezdg-open`
 
 These are not required for v1, but they make the feature feel complete.
 
@@ -330,7 +330,7 @@ That means the package should make multiple sequential calls to `delegate_task` 
 2. **How should delegated workers signal completion back?**
    - out of scope for v1, but leave room for it
 
-3. **Should `/delegate` fail outside tmux in v1?**
+3. **Should `/ezdg` fail outside tmux in v1?**
    - likely yes, with a clear message, until another adapter exists
 
 4. **Should worktree creation be automatic for non-git cwd?**
@@ -350,28 +350,28 @@ That means the package should make multiple sequential calls to `delegate_task` 
 - [x] implementation plan
 
 ### Extension MVP
-- [ ] implement robust `/delegate` arg parsing and validation
-- [ ] wait for idle before mutating session / launching worker
-- [ ] create a forked worker session file without hijacking the current session
-- [ ] set a sensible worker session name
-- [ ] build delegated task prompt from user input
-- [ ] select adapter (tmux only initially)
-- [ ] launch worker process
-- [ ] emit structured result back into the parent session
+- [x] implement robust `/ezdg` arg parsing and validation
+- [x] wait for idle before mutating session / launching worker
+- [x] create a forked worker session file without hijacking the current session
+- [x] set a sensible worker session name
+- [x] build delegated task prompt from user input
+- [x] select adapter (tmux only initially)
+- [x] launch worker process
+- [x] emit structured result back into the parent session
 
 ### Worktree MVP
-- [ ] detect when current cwd is inside a git repo
-- [ ] create a worker worktree by default for same-repo delegation
-- [ ] allow `--no-worktree`
-- [ ] plumb worker cwd into the launched pi process
+- [x] detect when current cwd is inside a git repo
+- [x] create a worker worktree by default for same-repo delegation
+- [x] allow `--no-worktree`
+- [x] plumb worker cwd into the launched pi process
 
 ### Tool MVP
-- [ ] implement `delegate_task`
-- [ ] add good prompt guidelines for model usage
-- [ ] ensure tool result stores launch details for later reconstruction
+- [x] implement `delegate_task`
+- [x] add good prompt guidelines for model usage
+- [x] ensure tool result stores launch details for later reconstruction
 
 ### Registry / attach follow-up
-- [ ] persist worker launch records
+- [x] persist worker launch records
 - [ ] list known workers
 - [ ] attach or switch to existing worker targets
 - [ ] document the reattach flow
@@ -380,7 +380,7 @@ That means the package should make multiple sequential calls to `delegate_task` 
 
 Implement this first and stop:
 
-1. `/delegate <task>`
+1. `/ezdg <task>`
 2. tmux pane mode only
 3. same-repo worktree creation by default
 4. visible result message with session path + tmux target
