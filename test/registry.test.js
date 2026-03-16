@@ -55,6 +55,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
       targetId: "%42",
       windowId: "@2",
       originPaneId: "%1",
+      originWindowId: "@2",
     },
   });
 
@@ -68,6 +69,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
   assert.equal(record.windowId, "@2");
   assert.equal(record.paneId, "%42");
   assert.equal(record.originPaneId, "%1");
+  assert.equal(record.originWindowId, "@2");
   assert.equal(record.taskBranch, "ezdg/registry-worker");
   assert.equal(record.baseBranch, "main");
 });

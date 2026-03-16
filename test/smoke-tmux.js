@@ -5,7 +5,7 @@ import os from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { delegateTask } from "../lib/delegate.js";
+import { DELEGATE_STATE_ENTRY_TYPE, delegateTask } from "../lib/delegate.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +25,14 @@ async function waitFor(condition, timeoutMs = 5000, intervalMs = 100) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
+function parseTabbedFields(stdout, expectedFieldCount) {
+  const fields = stdout.trim().split("\t");
+  if (fields.length < expectedFieldCount || fields.slice(0, expectedFieldCount).some((field) => !field)) {
+    throw new Error("Unexpected tmux output.");
+  }
+  return fields;
 }
 
 async function tmuxHas(targetType, targetId) {
@@ -56,6 +64,43 @@ async function cleanupTmuxTarget(mode, targetId, sessionName) {
   } catch {
     // best-effort cleanup only
   }
+}
+
+async function getTmuxPaneContext(paneId) {
+  const { stdout } = await run(
+    "tmux",
+    ["display-message", "-p", "-t", paneId, "#{pane_id}\t#{window_id}\t#{session_id}"],
+    { env: process.env },
+  );
+  const [resolvedPaneId, windowId, sessionId] = parseTabbedFields(stdout, 3);
+  return {
+    paneId: resolvedPaneId,
+    windowId,
+    sessionId,
+  };
+}
+
+async function createAnchorWindow() {
+  const { stdout } = await run(
+    "tmux",
+    ["new-window", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_id}", "-n", "ezdg-anchor", "sleep 60"],
+    { env: process.env },
+  );
+  const [paneId, windowId, sessionId] = parseTabbedFields(stdout, 3);
+  return {
+    paneId,
+    windowId,
+    sessionId,
+  };
+}
+
+async function readSessionEntries(sessionFile) {
+  const raw = await readFile(sessionFile, "utf8");
+  return raw
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 if (!process.env.TMUX) {
@@ -119,7 +164,83 @@ try {
 
   let previousLogCount = 0;
 
-  for (const mode of ["pane", "window", "session"]) {
+  const anchor = await createAnchorWindow();
+  try {
+    const paneResult = await delegateTask(
+      {
+        task: "smoke test pane",
+        target: "pane",
+        name: "smoke-pane",
+        createWorktree: true,
+      },
+      {
+        parentCwd: repoDir,
+        parentSessionFile: join(tempRoot, "parent.jsonl"),
+        headerVersion: 3,
+        branchEntries: [
+          ...branchEntries,
+          {
+            type: "custom",
+            id: "33333333",
+            parentId: "22222222",
+            timestamp: new Date().toISOString(),
+            customType: DELEGATE_STATE_ENTRY_TYPE,
+            data: {
+              active: true,
+              workerId: "anchor-worker",
+              targetMode: "pane",
+              originPaneId: anchor.paneId,
+              originWindowId: anchor.windowId,
+            },
+          },
+        ],
+        getLabel: () => undefined,
+        env: process.env,
+        piCommand: fakePiPath,
+      },
+    );
+
+    assert.equal(paneResult.worktree.created, true);
+    assert.equal(paneResult.launch.mode, "pane");
+    assert.equal(paneResult.launch.originPaneId, anchor.paneId);
+    assert.equal(paneResult.launch.originWindowId, anchor.windowId);
+    assert.equal(paneResult.launch.windowId, anchor.windowId);
+    assert.ok(paneResult.cwd.effective.includes(".pi-worktrees"));
+
+    const paneSessionEntries = await readSessionEntries(paneResult.session.sessionFile);
+    const paneStateEntry = paneSessionEntries.find((entry) => entry.customType === DELEGATE_STATE_ENTRY_TYPE);
+    assert.ok(paneStateEntry);
+    assert.equal(paneStateEntry.data.originPaneId, anchor.paneId);
+    assert.equal(paneStateEntry.data.originWindowId, anchor.windowId);
+
+    const paneLogLines = await waitFor(async () => {
+      try {
+        const raw = await readFile(logPath, "utf8");
+        const entries = raw
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        return entries.length > previousLogCount ? entries : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+
+    previousLogCount = paneLogLines.length;
+    const latestPaneLog = paneLogLines.at(-1);
+    assert.equal(latestPaneLog.cwd, paneResult.cwd.effective);
+    assert.equal(latestPaneLog.argv[0], "--session");
+    assert.equal(latestPaneLog.argv[1], paneResult.session.sessionFile);
+    assert.match(latestPaneLog.argv[2], /You are a delegated worker launched via \/ezdg\./);
+    assert.match(latestPaneLog.argv[2], /smoke test pane/);
+
+    await cleanupTmuxTarget(paneResult.launch.mode, paneResult.launch.targetId, paneResult.launch.sessionName);
+  } finally {
+    await cleanupTmuxTarget("window", anchor.windowId);
+  }
+
+  for (const mode of ["window", "session"]) {
     const result = await delegateTask(
       {
         task: `smoke test ${mode}`,

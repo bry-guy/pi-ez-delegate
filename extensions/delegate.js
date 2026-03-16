@@ -5,6 +5,7 @@ import {
   DELEGATE_COMMAND,
   DELEGATE_MESSAGE_TYPE,
   DELEGATE_REGISTRY_ENTRY_TYPE,
+  DELEGATE_STATE_ENTRY_TYPE,
   DELEGATE_TARGETS,
   delegateTask,
   formatDelegateHelp,
@@ -81,6 +82,13 @@ function sendDelegateMessage(pi, content, details) {
   });
 }
 
+function appendDelegateEntries(pi, result) {
+  if (result?.delegateState) {
+    pi.appendEntry(DELEGATE_STATE_ENTRY_TYPE, result.delegateState);
+  }
+  pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
+}
+
 export default function delegateExtension(pi) {
   pi.registerCommand(DELEGATE_COMMAND, {
     description: "Fork the current session into a tmux worker, with same-repo worktrees by default",
@@ -103,7 +111,7 @@ export default function delegateExtension(pi) {
       const rawBranchEntries = ctx.sessionManager.getBranch();
       try {
         const result = await delegateTask(parsed.request, buildRuntimeContext(ctx, rawBranchEntries));
-        pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
+        appendDelegateEntries(pi, result);
         if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} in tmux ${result.launch.mode}`, "success");
         sendDelegateMessage(pi, formatDelegateLaunchResult(result), result);
       } catch (error) {
@@ -139,7 +147,7 @@ export default function delegateExtension(pi) {
         buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true }),
       );
 
-      pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
+      appendDelegateEntries(pi, result);
 
       return {
         content: [{ type: "text", text: formatDelegateLaunchResult(result) }],
