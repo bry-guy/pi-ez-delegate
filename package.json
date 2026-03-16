@@ -1,0 +1,29 @@
+{
+  "name": "pi-ez-delegate",
+  "version": "1.0.0",
+  "description": "A pi package that delegates work into forked pi sessions running in pluggable terminal multiplexer targets.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bry-guy/pi-ez-delegate.git"
+  },
+  "homepage": "https://github.com/bry-guy/pi-ez-delegate#readme",
+  "bugs": {
+    "url": "https://github.com/bry-guy/pi-ez-delegate/issues"
+  },
+  "type": "module",
+  "keywords": ["pi-package", "pi", "delegate", "tmux", "zellij", "worktree"],
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check extensions/delegate.js && node --check lib/delegate.js"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  }
+}

@@ -1,0 +1,6 @@
+[tools]
+node = "22"
+
+[tasks.check]
+description = "Smoke-check the extension and core module imports"
+run = "npm run check"
