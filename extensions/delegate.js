@@ -18,6 +18,7 @@ import {
   getParentEffectiveCwd,
   parseDelegateCommandInput,
 } from "../lib/delegate.js";
+import { loadDelegateConfig } from "../lib/config.js";
 import {
   listWorkersForScope,
   findWorkerByNameOrId,
@@ -30,6 +31,49 @@ import {
   formatCleanResult,
 } from "../lib/manager.js";
 import { attachToTmuxTarget } from "../lib/tmux.js";
+
+// ---------------------------------------------------------------------------
+// Config cache
+// ---------------------------------------------------------------------------
+
+let configCache = null;
+
+async function getConfig() {
+  if (!configCache) {
+    const loaded = await loadDelegateConfig();
+    configCache = loaded.config;
+  }
+  return configCache;
+}
+
+/**
+ * Apply config-driven defaults to a start request.
+ *
+ * The parser in lib/delegate.js hardcodes target="pane" when the user does not
+ * pass --target.  We detect this by checking whether the parsed target equals
+ * the parser default ("pane") — if it does and the config specifies a different
+ * defaultTarget, we override it.  When the user explicitly passes --target the
+ * parsed value will already be what they asked for and either matches the
+ * config default (no-op) or differs from "pane" (not overridden).
+ *
+ * The same strategy applies to split when the other worker wires --split into
+ * the parser.
+ */
+function applyConfigDefaults(request, config) {
+  const patched = { ...request };
+
+  // Override target only when it is still the parser hardcoded default
+  if (patched.target === "pane" && config.defaultTarget !== "pane") {
+    patched.target = config.defaultTarget;
+  }
+
+  // Forward layout thresholds so delegateTask can use them (once --split is wired)
+  patched.minPaneColumns = patched.minPaneColumns ?? config.minPaneColumns;
+  patched.minPaneRows = patched.minPaneRows ?? config.minPaneRows;
+  patched.defaultPaneSplit = patched.defaultPaneSplit ?? config.defaultPaneSplit;
+
+  return patched;
+}
 
 const delegateSchema = Type.Object({
   task: Type.String({ description: "Task prompt for the delegated worker" }),
@@ -198,16 +242,18 @@ export default function delegateExtension(pi) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const rawBranchEntries = ctx.sessionManager.getBranch();
       const runtime = buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true });
-      const result = await delegateTask(
+      const config = await getConfig();
+      const request = applyConfigDefaults(
         {
           task: params.task,
-          target: params.target,
+          target: params.target || "pane",
           name: params.name,
           cwd: params.cwd,
           createWorktree: params.createWorktree ?? true,
         },
-        runtime,
+        config,
       );
+      const result = await delegateTask(request, runtime);
 
       appendDelegateEntries(pi, result);
 
@@ -245,7 +291,9 @@ async function handleStart(pi, ctx, parsed) {
   const rawBranchEntries = ctx.sessionManager.getBranch();
 
   try {
-    const result = await delegateTask(parsed.request, buildRuntimeContext(ctx, rawBranchEntries));
+    const config = await getConfig();
+    const request = applyConfigDefaults(parsed.request, config);
+    const result = await delegateTask(request, buildRuntimeContext(ctx, rawBranchEntries));
     appendDelegateEntries(pi, result);
 
     // Persist to registry (best-effort)
