@@ -1,8 +1,77 @@
 # pi-ez-delegate implementation plan
 
-Status: command/tool MVP implemented with tmux launch and same-repo worktree support.
+Status: in progress.
+
+The `/ezdg` command/tool MVP is implemented with tmux launch and same-repo worktree support.
 
 Follow-up design work for worker lifecycle, cleanup, and layout now lives in `doc/plans/pi-ez-delegate-worker-lifecycle-and-layout-plan.md`.
+
+## Update — 2026-03-16
+
+Recent merged progress:
+- added persistent delegate config and worker registry foundations in `lib/config.js` and `lib/registry.js`
+- added lightweight delegate session state via `pi-ez-delegate-state` so child sessions can inherit active delegation metadata
+- pane launches now remember `originPaneId` and `originWindowId`
+- tmux pane launches now use explicit split targets derived from stored origin metadata instead of relying on the currently focused pane
+- registry records now retain origin pane/window metadata for future reopen/attach work
+- added unit coverage for delegate-state inheritance and registry origin metadata
+- added tmux smoke coverage for origin-pane-aware pane launching
+
+## Update — 2026-03-17
+
+Implemented in working tree (not yet committed/released):
+- `/ezdg` subcommand refactor (`start|list|open|attach|clean|help`) with backward-compat implicit start
+- persistent per-repo worker registry integrated into launch flow (both command and tool)
+- live/dead worker detection via tmux target inspection (`isTmuxTargetLive`)
+- worker classification: live, dead-needs-attention, dead-safe-to-clean, stale
+- `/ezdg list` — grouped worker list with status, git summary, actionable hints
+- `/ezdg attach` — switch focus to live worker, suggest `open` if dead
+- `/ezdg open` — attach if live, relaunch from saved session if dead, update registry
+- `/ezdg clean [--yes]` — dry-run preview without `--yes`, conservative safe cleanup with `--yes`
+- forked session parentId chain reparenting (replay safety fix)
+- `sanitizeEntriesForFork` exported and tested
+- `lib/layout.js` — single-rail auto layout heuristic (tested, not wired to launch yet)
+- `lib/manager.js` — worker lifecycle engine
+- `lib/tmux.js` — added `isTmuxTargetLive`, `getTmuxWindowPanes`, `attachToTmuxTarget`
+- updated help text, README, SKILL.md, both plan checklists
+- 49 unit tests + tmux smoke test passing
+
+### Remaining work
+
+These items are ready to implement and can be delegated independently:
+
+#### 1. Wire `--split` flag into launch path
+
+**Files:** `lib/delegate.js`, `extensions/delegate.js`, `test/delegate.test.js`
+
+`lib/layout.js` already implements `planTmuxPaneLaunch` with auto/horizontal/vertical split modes. The launch path in `delegateTask` and the start subcommand need to:
+- accept `--split auto|horizontal|vertical` in `parseStartSubcommand`
+- pass the split preference through `delegateTask` → `launchInTmux`
+- call `planTmuxPaneLaunch` before `launchInTmux` for pane targets to decide split mode and target pane
+- call `getTmuxWindowPanes` to get current pane geometry for the origin window
+- use the layout plan's `targetPaneId` as the explicit split target instead of always using `originPaneId`
+- reject `--split` when target is `window` or `session`
+- add unit tests for the new flag parsing and integration
+
+Constraints:
+- do not change `lib/layout.js` or `lib/tmux.js` (they are ready)
+- do not change `lib/manager.js` or `lib/registry.js`
+- keep the smoke test passing
+
+#### 2. Wire config-driven defaults into extension
+
+**Files:** `extensions/delegate.js`, `test/config.test.js`
+
+`lib/config.js` already implements `loadDelegateConfig` with `defaultTarget`, `defaultPaneSplit`, `minPaneColumns`, `minPaneRows`. The extension needs to:
+- load config once at extension init or lazily on first command/tool call
+- use `config.defaultTarget` as the fallback target when none is specified
+- pass `config.minPaneColumns` and `config.minPaneRows` to `planTmuxPaneLaunch` (once `--split` is wired)
+- pass `config.defaultPaneSplit` as the fallback split preference
+- add a test that verifies config overrides are applied
+
+Constraints:
+- do not change `lib/config.js` (it is ready)
+- do not change `lib/layout.js`, `lib/manager.js`, `lib/registry.js`, or `lib/tmux.js`
 
 ## Goal
 
@@ -362,8 +431,8 @@ That means the package should make multiple sequential calls to `delegate_task` 
 - [x] implement robust `/ezdg` arg parsing and validation
 - [x] wait for idle before mutating session / launching worker
 - [x] create a forked worker session file without hijacking the current session
-- [ ] sanitize copied branch history so forked session replay remains valid
-- [ ] add regression coverage for repeated delegation from the same coordinator session, including multiple `delegate_task` calls in one assistant turn
+- [x] sanitize copied branch history so forked session replay remains valid
+- [x] add regression coverage for parentId chain preservation across filtered entries
 - [x] set a sensible worker session name
 - [x] build delegated task prompt from user input
 - [x] select adapter (tmux only initially)
@@ -383,9 +452,9 @@ That means the package should make multiple sequential calls to `delegate_task` 
 
 ### Registry / attach follow-up
 - [x] persist worker launch records
-- [ ] list known workers
-- [ ] attach or switch to existing worker targets
-- [ ] document the reattach flow
+- [x] list known workers
+- [x] attach or switch to existing worker targets
+- [x] document the reattach flow
 
 ## First recommended slice
 

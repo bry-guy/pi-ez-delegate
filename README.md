@@ -15,31 +15,91 @@ The core flow is:
 
 ## Status
 
-Implemented today:
-- **Command:** `/ezdg ...`
+Implemented:
+- **Command:** `/ezdg <subcommand> [options]`
 - **Tool:** `delegate_task`
 - **tmux adapter:** pane, window, and session launch targets
 - **Session forking:** worker gets a forked session file with the current conversation branch
 - **Same-repo worktrees:** enabled by default unless `--no-worktree` is used
-- **Launch records:** persisted as custom session entries for later follow-up features
+- **Worker registry:** persistent per-repo registry for cross-session worker discovery
+- **Worker lifecycle:** list, attach, open, and clean subcommands
+- **Live/dead detection:** tmux target inspection for liveness checks
+- **Safe cleanup:** conservative dead-worker cleanup with dry-run preview
+- **Replay safety:** parentId chain preservation when forking sessions
+- **Single-rail pane layout:** configurable min columns/rows for auto layout decisions
 
 Not implemented yet:
-- worker list / reattach slash commands
+- `--split auto|horizontal|vertical` flag (layout module exists but not wired to launch)
+- `--model` / `--pick-model` flags
 - zellij adapter
 - completion signaling back from workers to parents
 
 ## Command
 
 ```text
-/ezdg [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
+/ezdg <subcommand> [options]
 ```
 
-Examples:
+### Subcommands
+
+#### Start a worker (default)
+
+```text
+/ezdg [start] [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
+```
+
+The `start` keyword is optional — `/ezdg <task>` works as an implicit start.
+
+#### List workers
+
+```text
+/ezdg list
+```
+
+Shows all workers for the current repo grouped by status: live, needs attention, safe to clean, stale.
+
+#### Attach to a live worker
+
+```text
+/ezdg attach <name-or-id>
+```
+
+Switches tmux focus to the worker's pane/window/session. Fails with a suggestion to use `open` if the worker is dead.
+
+#### Open a worker
+
+```text
+/ezdg open <name-or-id> [--target pane|window|session]
+```
+
+If the worker is live, attaches to it. If dead, relaunches from its saved session file and worktree.
+
+#### Clean dead workers
+
+```text
+/ezdg clean [--yes]
+```
+
+Without `--yes`, shows a preview of what would be cleaned. With `--yes`, deletes session files, removes worktrees, and deletes branches for workers that are safe to clean.
+
+Workers with dirty worktrees, branches ahead of base, or in-progress rebases/merges are skipped with actionable recommendations.
+
+#### Help
+
+```text
+/ezdg help [subcommand]
+```
+
+### Examples
 
 ```text
 /ezdg implement the GH Actions publish pipeline
-/ezdg --target window wire up castaway-web service auth middleware
+/ezdg start --target window wire up castaway-web service auth middleware
 /ezdg --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
+/ezdg list
+/ezdg open my-worker
+/ezdg attach my-worker
+/ezdg clean --yes
 ```
 
 Defaults:
@@ -72,6 +132,20 @@ Each launch returns:
 - tmux target identifier
 - a switch hint such as `tmux select-pane -t %17`
 
+## Worker lifecycle
+
+Workers are tracked in a persistent per-repo registry file at:
+
+```text
+~/.pi/agent/state/pi-ez-delegate/<repo-slug>-<hash>.json
+```
+
+Worker statuses:
+- **Live** — tmux target still exists
+- **Needs Attention** — dead, but has dirty/ahead/conflicted worktree
+- **Safe to Clean** — dead, worktree clean or missing
+- **Stale** — dead, no session file or workspace remains
+
 ## Worktree behavior
 
 When the delegated cwd is inside the **same git repo** as the parent session, `pi-ez-delegate` creates a fresh worktree by default.
@@ -86,10 +160,26 @@ The worker session is a **forked session file**, not a blank new run.
 
 It inherits the current conversation branch, but intentionally drops non-context custom extension state so workers do not accidentally restore parent runtime state such as active `pi-ez-worktree` routing.
 
+parentId chains are preserved across filtered entries so pi's session tree traversal remains valid in the forked session.
+
 The worker session gets its own display name in the form:
 
 ```text
 ezdg:<worker-name>
+```
+
+## Configuration
+
+Optional config file at `~/.pi/agent/pi-ez-delegate.json`:
+
+```json
+{
+  "multiplexer": "tmux",
+  "defaultTarget": "pane",
+  "defaultPaneSplit": "auto",
+  "minPaneColumns": 180,
+  "minPaneRows": 28
+}
 ```
 
 ## Install

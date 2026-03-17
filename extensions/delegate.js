@@ -1,19 +1,35 @@
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { basename } from "node:path";
 import {
   DELEGATE_COMMAND,
   DELEGATE_MESSAGE_TYPE,
   DELEGATE_REGISTRY_ENTRY_TYPE,
   DELEGATE_STATE_ENTRY_TYPE,
+  DELEGATE_SUBCOMMANDS,
   DELEGATE_TARGETS,
   delegateTask,
   formatDelegateHelp,
   formatDelegateLaunchResult,
+  getActiveDelegateState,
   getForkBranchEntries,
+  getGitContext,
   getParentEffectiveCwd,
   parseDelegateCommandInput,
 } from "../lib/delegate.js";
+import {
+  listWorkersForScope,
+  findWorkerByNameOrId,
+  reopenWorker,
+  cleanSafeWorkers,
+  persistLaunchToRegistry,
+  persistReopenToRegistry,
+  formatWorkerList,
+  formatCleanPreview,
+  formatCleanResult,
+} from "../lib/manager.js";
+import { attachToTmuxTarget } from "../lib/tmux.js";
 
 const delegateSchema = Type.Object({
   task: Type.String({ description: "Task prompt for the delegated worker" }),
@@ -25,6 +41,10 @@ const delegateSchema = Type.Object({
   ),
 });
 
+// ---------------------------------------------------------------------------
+// Completions
+// ---------------------------------------------------------------------------
+
 function filterCompletionItems(prefix, items) {
   const normalized = String(prefix || "").toLowerCase();
   const filtered = items.filter((item) => item.label.toLowerCase().startsWith(normalized));
@@ -34,16 +54,39 @@ function filterCompletionItems(prefix, items) {
 function getDelegateArgumentCompletions(prefix) {
   const tokens = String(prefix || "").match(/(?:"[^"]*"|'[^']*'|\S+)/g) || [];
   const current = /\s$/.test(prefix) ? "" : (tokens.at(-1) ?? "");
+
+  // First token: offer subcommands + flags
+  if (tokens.length <= 1) {
+    const subcommandItems = [
+      { value: "start ", label: "start", description: "Launch a new worker" },
+      { value: "list", label: "list", description: "List workers" },
+      { value: "attach ", label: "attach", description: "Attach to a live worker" },
+      { value: "open ", label: "open", description: "Open a worker" },
+      { value: "clean ", label: "clean", description: "Clean dead workers" },
+      { value: "help", label: "help", description: "Show help" },
+    ];
+    const flagItems = [
+      { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
+      { value: "--name ", label: "--name", description: "Set a worker name" },
+      { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
+      { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
+    ];
+    return filterCompletionItems(current, [...subcommandItems, ...flagItems]);
+  }
+
+  // After first token: flag completions for start/implicit start
   if (!current || current.startsWith("--")) {
     return filterCompletionItems(current, [
       { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
-      { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation for this delegation" },
+      { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
       { value: "--worktree", label: "--worktree", description: "Explicitly request a worktree" },
       { value: "--help", label: "--help", description: "Show usage" },
+      { value: "--yes", label: "--yes", description: "Skip confirmation (clean)" },
     ]);
   }
+
   if (tokens.at(-2) === "--target" || current.startsWith("--target=")) {
     const targetPrefix = current.startsWith("--target=") ? current.slice("--target=".length) : current;
     return filterCompletionItems(
@@ -55,8 +98,13 @@ function getDelegateArgumentCompletions(prefix) {
       })),
     );
   }
+
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
   const parentCwd = getParentEffectiveCwd(ctx.cwd, rawBranchEntries);
@@ -89,16 +137,26 @@ function appendDelegateEntries(pi, result) {
   pi.appendEntry(DELEGATE_REGISTRY_ENTRY_TYPE, result);
 }
 
+async function getRegistryScope(ctx) {
+  const rawBranchEntries = ctx.sessionManager.getBranch();
+  const parentCwd = getParentEffectiveCwd(ctx.cwd, rawBranchEntries);
+  const gitContext = await getGitContext(parentCwd);
+  if (!gitContext) return undefined;
+  return { key: gitContext.mainCheckoutPath, label: basename(gitContext.mainCheckoutPath) };
+}
+
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
 export default function delegateExtension(pi) {
+  // --- Command ---
   pi.registerCommand(DELEGATE_COMMAND, {
-    description: "Fork the current session into a tmux worker, with same-repo worktrees by default",
+    description: "Delegate work to forked worker sessions (start, list, attach, open, clean, help)",
     getArgumentCompletions: getDelegateArgumentCompletions,
     handler: async (args, ctx) => {
       const parsed = parseDelegateCommandInput(args);
-      if (parsed.request.help) {
-        sendDelegateMessage(pi, formatDelegateHelp(), { status: "help" });
-        return;
-      }
+
       if (parsed.errors.length > 0) {
         const content = [`/${DELEGATE_COMMAND} could not parse the request.`, "", ...parsed.errors, "", formatDelegateHelp()].join("\n");
         if (ctx.hasUI) ctx.ui.notify(parsed.errors[0], "error");
@@ -106,22 +164,25 @@ export default function delegateExtension(pi) {
         return;
       }
 
-      await ctx.waitForIdle();
-
-      const rawBranchEntries = ctx.sessionManager.getBranch();
-      try {
-        const result = await delegateTask(parsed.request, buildRuntimeContext(ctx, rawBranchEntries));
-        appendDelegateEntries(pi, result);
-        if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} in tmux ${result.launch.mode}`, "success");
-        sendDelegateMessage(pi, formatDelegateLaunchResult(result), result);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (ctx.hasUI) ctx.ui.notify(message, "error");
-        sendDelegateMessage(pi, message, { status: "error" });
+      switch (parsed.subcommand) {
+        case "help":
+          sendDelegateMessage(pi, formatDelegateHelp(parsed.request.topic), { status: "help" });
+          return;
+        case "start":
+          return handleStart(pi, ctx, parsed);
+        case "list":
+          return handleList(pi, ctx);
+        case "attach":
+          return handleAttach(pi, ctx, parsed);
+        case "open":
+          return handleOpen(pi, ctx, parsed);
+        case "clean":
+          return handleClean(pi, ctx, parsed);
       }
     },
   });
 
+  // --- Tool ---
   pi.registerTool({
     name: "delegate_task",
     label: "Delegate Task",
@@ -136,6 +197,7 @@ export default function delegateExtension(pi) {
     parameters: delegateSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const rawBranchEntries = ctx.sessionManager.getBranch();
+      const runtime = buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true });
       const result = await delegateTask(
         {
           task: params.task,
@@ -144,10 +206,14 @@ export default function delegateExtension(pi) {
           cwd: params.cwd,
           createWorktree: params.createWorktree ?? true,
         },
-        buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true }),
+        runtime,
       );
 
       appendDelegateEntries(pi, result);
+
+      // Persist to registry (best-effort)
+      const scope = await getRegistryScope(ctx);
+      if (scope) await persistLaunchToRegistry(result, scope);
 
       return {
         content: [{ type: "text", text: formatDelegateLaunchResult(result) }],
@@ -156,13 +222,189 @@ export default function delegateExtension(pi) {
     },
   });
 
+  // --- Message renderer ---
   pi.registerMessageRenderer(DELEGATE_MESSAGE_TYPE, (message, options, theme) => {
     const status = message.details?.status;
     const color = status === "error" ? "error" : status === "success" ? "success" : "accent";
     let text = theme.fg(color, `[${DELEGATE_COMMAND}] `) + String(message.content);
-    if (options.expanded && message.details) {
-      text += "\n\n" + theme.fg("dim", JSON.stringify(message.details, null, 2));
+    if (options.expanded && message.details && typeof message.details === "object" && !Array.isArray(message.details)) {
+      const safeDetails = { ...message.details };
+      delete safeDetails.workers; // avoid dumping large lists
+      text += "\n\n" + theme.fg("dim", JSON.stringify(safeDetails, null, 2));
     }
     return new Text(text, 0, 0);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand handlers
+// ---------------------------------------------------------------------------
+
+async function handleStart(pi, ctx, parsed) {
+  await ctx.waitForIdle();
+  const rawBranchEntries = ctx.sessionManager.getBranch();
+
+  try {
+    const result = await delegateTask(parsed.request, buildRuntimeContext(ctx, rawBranchEntries));
+    appendDelegateEntries(pi, result);
+
+    // Persist to registry (best-effort)
+    const scope = await getRegistryScope(ctx);
+    if (scope) await persistLaunchToRegistry(result, scope);
+
+    if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} in tmux ${result.launch.mode}`, "success");
+    sendDelegateMessage(pi, formatDelegateLaunchResult(result), result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (ctx.hasUI) ctx.ui.notify(message, "error");
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
+
+async function handleList(pi, ctx) {
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (!scope) {
+      sendDelegateMessage(pi, "Not inside a git repository. Worker list requires a repo context.", { status: "error" });
+      return;
+    }
+
+    const result = await listWorkersForScope(scope, { env: process.env });
+    sendDelegateMessage(pi, formatWorkerList(result.workers), { status: "success", workerCount: result.workers.length });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
+
+async function handleAttach(pi, ctx, parsed) {
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (!scope) {
+      sendDelegateMessage(pi, "Not inside a git repository.", { status: "error" });
+      return;
+    }
+
+    const result = await listWorkersForScope(scope, { env: process.env });
+    const worker = findWorkerByNameOrId(result.workers, parsed.request.nameOrId);
+
+    if (!worker) {
+      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
+      return;
+    }
+
+    if (!worker.live) {
+      const slug = worker.record.slug || worker.record.id;
+      sendDelegateMessage(
+        pi,
+        `Worker "${worker.record.name}" is not live. Use /ezdg open ${slug} to relaunch.`,
+        { status: "error" },
+      );
+      return;
+    }
+
+    const targetMode = worker.record.targetMode || "pane";
+    const targetId = worker.record.paneId || worker.record.windowId || worker.record.sessionId;
+    await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName: worker.record.slug });
+
+    if (ctx.hasUI) ctx.ui.notify(`Attached to ${worker.record.name}`, "success");
+    sendDelegateMessage(pi, `Attached to ${worker.record.name} (${targetMode} ${targetId}).`, { status: "success" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (ctx.hasUI) ctx.ui.notify(message, "error");
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
+
+async function handleOpen(pi, ctx, parsed) {
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (!scope) {
+      sendDelegateMessage(pi, "Not inside a git repository.", { status: "error" });
+      return;
+    }
+
+    const result = await listWorkersForScope(scope, { env: process.env });
+    const worker = findWorkerByNameOrId(result.workers, parsed.request.nameOrId);
+
+    if (!worker) {
+      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
+      return;
+    }
+
+    if (worker.live) {
+      const targetMode = worker.record.targetMode || "pane";
+      const targetId = worker.record.paneId || worker.record.windowId || worker.record.sessionId;
+      await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName: worker.record.slug });
+      if (ctx.hasUI) ctx.ui.notify(`Worker "${worker.record.name}" is live — attached`, "success");
+      sendDelegateMessage(pi, `Worker "${worker.record.name}" is live. Attached to ${targetMode} ${targetId}.`, { status: "success" });
+      return;
+    }
+
+    // Dead — relaunch
+    const rawBranchEntries = ctx.sessionManager.getBranch();
+    const delegateState = getActiveDelegateState(rawBranchEntries);
+    const originPaneId = delegateState?.originPaneId || process.env.TMUX_PANE;
+
+    const relaunch = await reopenWorker(worker.record, {
+      env: process.env,
+      piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
+      target: parsed.request.target,
+      originPaneId,
+    });
+
+    // Update registry
+    const updatedRecord = {
+      ...worker.record,
+      targetMode: relaunch.launch.mode,
+      targetId: relaunch.launch.targetId,
+      paneId: relaunch.launch.paneId,
+      windowId: relaunch.launch.windowId,
+      sessionId: relaunch.launch.sessionId,
+      originPaneId: relaunch.launch.originPaneId,
+      originWindowId: relaunch.launch.originWindowId,
+    };
+    await persistReopenToRegistry(updatedRecord, scope);
+
+    if (ctx.hasUI) ctx.ui.notify(`Reopened ${worker.record.name} in ${relaunch.launch.mode}`, "success");
+    sendDelegateMessage(
+      pi,
+      `Reopened "${worker.record.name}" in ${relaunch.launch.mode} ${relaunch.launch.targetId}.\nSwitch: ${relaunch.launch.attachHint}`,
+      { status: "success" },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (ctx.hasUI) ctx.ui.notify(message, "error");
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
+
+async function handleClean(pi, ctx, parsed) {
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (!scope) {
+      sendDelegateMessage(pi, "Not inside a git repository.", { status: "error" });
+      return;
+    }
+
+    const result = await listWorkersForScope(scope, { env: process.env });
+
+    if (!parsed.request.yes) {
+      sendDelegateMessage(pi, formatCleanPreview(result.workers), { status: "preview" });
+      return;
+    }
+
+    const cleanResult = await cleanSafeWorkers(
+      { scope, registry: result.registry, registryPath: result.registryPath },
+      result.workers,
+    );
+
+    if (ctx.hasUI && cleanResult.cleaned.length > 0) {
+      ctx.ui.notify(`Cleaned ${cleanResult.cleaned.length} worker(s).`, "success");
+    }
+    sendDelegateMessage(pi, formatCleanResult(cleanResult), { status: "success" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
 }

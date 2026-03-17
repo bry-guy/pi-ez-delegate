@@ -578,31 +578,31 @@ Those are premature because this phase still launches one worker at a time.
 ## Recommended implementation phases
 
 ### Phase 1: subcommand refactor + registry
-- [ ] refactor `/ezdg` into subcommands
-- [ ] add persistent worker registry file
-- [ ] keep session custom entries for launch history
-- [ ] preserve forked-session replay safety when copying branch entries
-- [ ] add regression tests for sequential and same-turn multi-`delegate_task` launches
-- [ ] migrate current launch flow into `/ezdg start`
+- [x] refactor `/ezdg` into subcommands
+- [x] add persistent worker registry file
+- [x] keep session custom entries for launch history
+- [x] preserve forked-session replay safety when copying branch entries
+- [x] add regression tests for parentId chain preservation across filtered entries
+- [x] migrate current launch flow into `/ezdg start`
 
 ### Phase 2: worker management
-- [ ] implement `/ezdg list`
-- [ ] implement `/ezdg attach`
-- [ ] implement `/ezdg open`
-- [ ] add tmux live/dead detection
+- [x] implement `/ezdg list`
+- [x] implement `/ezdg attach`
+- [x] implement `/ezdg open`
+- [x] add tmux live/dead detection
 
 ### Phase 3: safe cleanup
-- [ ] implement `/ezdg clean`
-- [ ] classify safe-to-clean vs needs-attention workers
-- [ ] delete only safe dead workers
-- [ ] print actionable recommendations for unsafe ones
+- [x] implement `/ezdg clean`
+- [x] classify safe-to-clean vs needs-attention workers
+- [x] delete only safe dead workers
+- [x] print actionable recommendations for unsafe ones
 
 ### Phase 4: layout + config
-- [ ] add package config loading
-- [ ] add `multiplexer` setting
-- [ ] add `defaultPaneSplit`, `minPaneColumns`, `minPaneRows`
-- [ ] add `--split auto|horizontal|vertical`
-- [ ] implement single-rail auto layout heuristic
+- [x] add package config loading
+- [x] add `multiplexer` setting
+- [x] add `defaultPaneSplit`, `minPaneColumns`, `minPaneRows`
+- [ ] add `--split auto|horizontal|vertical` (layout module exists, not wired to launch yet)
+- [x] implement single-rail auto layout heuristic
 
 ### Phase 5: model override
 - [ ] add `--model <pattern>`

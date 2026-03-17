@@ -42,11 +42,22 @@ Each delegated task should include:
 - what to avoid stepping on
 - the expected deliverable (code, plan, tests, notes)
 
+## Command surface
+
+The user-facing command family is `/ezdg <subcommand>`:
+
+- `/ezdg [start] <task>` — launch a new worker (start is implicit if omitted)
+- `/ezdg list` — list workers for the current repo
+- `/ezdg attach <name-or-id>` — switch to a live worker
+- `/ezdg open <name-or-id>` — attach if live, relaunch if dead
+- `/ezdg clean [--yes]` — clean safe dead workers (preview without --yes)
+- `/ezdg help [subcommand]` — show help
+
+The LLM-facing tool is `delegate_task`.
+
 ## Notes
-- The user-facing command family is `/ezdg ...`.
-- The current launch form is `/ezdg <task>`.
-- Future management commands should stay under the same `/ezdg ...` namespace.
-- The LLM-facing tool is `delegate_task`.
 - `pi-ez-delegate` forks the current conversation, can create a same-repo worktree, and launches a worker in tmux.
+- Workers are tracked in a persistent per-repo registry for cross-session discovery.
+- Dead workers can be reopened from their saved session files.
 - Do not suggest the old `/delegate` name.
 - Use delegation for independence, not for tightly-coupled parallel edits.
