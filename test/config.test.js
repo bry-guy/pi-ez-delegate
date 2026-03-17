@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 
@@ -73,6 +73,53 @@ test("loadDelegateConfig rejects invalid config values", async () => {
       () => loadDelegateConfig({ agentDir: tempAgentDir }),
       /defaultPaneSplit must be one of: auto, horizontal, vertical\./,
     );
+  } finally {
+    await rm(tempAgentDir, { recursive: true, force: true });
+  }
+});
+
+test("loadDelegateConfig overrides merge with file config then options.overrides", async () => {
+  const tempAgentDir = await mkdtemp(join(os.tmpdir(), "ezdg-config-"));
+  const configPath = getDefaultConfigPath(tempAgentDir);
+
+  try {
+    await mkdir(join(tempAgentDir), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({ defaultTarget: "window", minPaneColumns: 200 })}\n`,
+      "utf8",
+    );
+
+    const result = await loadDelegateConfig({
+      agentDir: tempAgentDir,
+      overrides: { minPaneRows: 40 },
+    });
+
+    // File config overrides DELEGATE_DEFAULT_CONFIG defaults
+    assert.equal(result.config.defaultTarget, "window");
+    assert.equal(result.config.minPaneColumns, 200);
+    // options.overrides wins over file config and defaults
+    assert.equal(result.config.minPaneRows, 40);
+    // Unset fields keep their defaults
+    assert.equal(result.config.multiplexer, "tmux");
+    assert.equal(result.config.defaultPaneSplit, "auto");
+  } finally {
+    await rm(tempAgentDir, { recursive: true, force: true });
+  }
+});
+
+test("loadDelegateConfig with only overrides and no file still works", async () => {
+  const tempAgentDir = await mkdtemp(join(os.tmpdir(), "ezdg-config-"));
+
+  try {
+    const result = await loadDelegateConfig({
+      agentDir: tempAgentDir,
+      overrides: { defaultTarget: "session" },
+    });
+
+    assert.equal(result.exists, false);
+    assert.equal(result.config.defaultTarget, "session");
+    assert.equal(result.config.multiplexer, "tmux");
   } finally {
     await rm(tempAgentDir, { recursive: true, force: true });
   }
