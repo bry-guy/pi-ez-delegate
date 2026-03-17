@@ -8,12 +8,14 @@ import {
   DELEGATE_COMMAND,
   DELEGATE_STATE_ENTRY_TYPE,
   buildDelegateState,
+  buildDelegatedPrompt,
   createForkedSessionFile,
   getActiveDelegateState,
   getForkBranchEntries,
   getParentEffectiveCwd,
   parseDelegateCommandInput,
   sanitizeEntriesForFork,
+  validateDelegateRequest,
 } from "../lib/delegate.js";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,133 @@ test("parseDelegateCommandInput empty input returns help", () => {
 test("parseDelegateCommandInput reports unknown flags", () => {
   const { errors } = parseDelegateCommandInput("--wat do the thing");
   assert.deepEqual(errors, ["Unknown flag: --wat"]);
+});
+
+// ---------------------------------------------------------------------------
+// --split flag parsing
+// ---------------------------------------------------------------------------
+
+test("parseDelegateCommandInput parses --split flag", () => {
+  const { subcommand, request, errors } = parseDelegateCommandInput("start --split vertical do the thing");
+  assert.equal(subcommand, "start");
+  assert.deepEqual(errors, []);
+  assert.equal(request.split, "vertical");
+  assert.equal(request.task, "do the thing");
+});
+
+test("parseDelegateCommandInput parses --split=horizontal", () => {
+  const { request, errors } = parseDelegateCommandInput("--split=horizontal do it");
+  assert.deepEqual(errors, []);
+  assert.equal(request.split, "horizontal");
+});
+
+test("parseDelegateCommandInput defaults split to auto", () => {
+  const { request } = parseDelegateCommandInput("do the thing");
+  assert.equal(request.split, "auto");
+});
+
+test("parseDelegateCommandInput reports invalid --split value", () => {
+  const { errors } = parseDelegateCommandInput("--split diagonal do it");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /split mode/i);
+});
+
+test("parseDelegateCommandInput reports missing --split value", () => {
+  const { errors } = parseDelegateCommandInput("--split --target pane do it");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /missing value for --split/i);
+});
+
+test("validateDelegateRequest rejects --split with non-pane target", () => {
+  assert.throws(
+    () => validateDelegateRequest({ task: "do it", target: "window", split: "vertical" }),
+    /--split is only supported with --target pane/,
+  );
+});
+
+test("validateDelegateRequest accepts --split with pane target", () => {
+  const result = validateDelegateRequest({ task: "do it", target: "pane", split: "horizontal" });
+  assert.equal(result.split, "horizontal");
+});
+
+// ---------------------------------------------------------------------------
+// --no-automerge flag parsing
+// ---------------------------------------------------------------------------
+
+test("parseDelegateCommandInput parses --no-automerge", () => {
+  const { request, errors } = parseDelegateCommandInput("start --no-automerge do the thing");
+  assert.deepEqual(errors, []);
+  assert.equal(request.automerge, false);
+  assert.equal(request.task, "do the thing");
+});
+
+test("parseDelegateCommandInput defaults automerge to true", () => {
+  const { request } = parseDelegateCommandInput("do the thing");
+  assert.equal(request.automerge, true);
+});
+
+test("validateDelegateRequest preserves automerge field", () => {
+  const result = validateDelegateRequest({ task: "do it", automerge: false });
+  assert.equal(result.automerge, false);
+});
+
+// ---------------------------------------------------------------------------
+// buildDelegatedPrompt automerge instructions
+// ---------------------------------------------------------------------------
+
+test("buildDelegatedPrompt includes merge instructions when automerge is true and worktree exists", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/repo",
+    requestedCwd: "/tmp/repo",
+    effectiveCwd: "/tmp/worktrees/test-worker",
+    worktree: {
+      created: true,
+      mainCheckoutPath: "/tmp/repo",
+      worktreePath: "/tmp/worktrees/test-worker",
+      taskBranch: "ezdg/test-worker",
+      baseBranch: "main",
+    },
+    automerge: true,
+  });
+  assert.match(prompt, /when your task is complete/i);
+  assert.match(prompt, /git -C \/tmp\/repo merge ezdg\/test-worker/);
+  assert.match(prompt, /worktree remove/);
+  assert.match(prompt, /branch -d ezdg\/test-worker/);
+});
+
+test("buildDelegatedPrompt omits merge instructions when automerge is false", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/repo",
+    requestedCwd: "/tmp/repo",
+    effectiveCwd: "/tmp/worktrees/test-worker",
+    worktree: {
+      created: true,
+      mainCheckoutPath: "/tmp/repo",
+      worktreePath: "/tmp/worktrees/test-worker",
+      taskBranch: "ezdg/test-worker",
+      baseBranch: "main",
+    },
+    automerge: false,
+  });
+  assert.ok(!prompt.includes("when your task is complete"));
+  assert.ok(!prompt.includes("worktree remove"));
+});
+
+test("buildDelegatedPrompt omits merge instructions when no worktree", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/repo",
+    requestedCwd: "/tmp/repo",
+    effectiveCwd: "/tmp/repo",
+    worktree: { created: false, reason: "disabled", effectiveCwd: "/tmp/repo" },
+    automerge: true,
+  });
+  assert.ok(!prompt.includes("when your task is complete"));
 });
 
 // ---------------------------------------------------------------------------
