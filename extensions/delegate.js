@@ -17,6 +17,7 @@ import {
   getGitContext,
   getParentEffectiveCwd,
   parseDelegateCommandInput,
+  resolveParentSessionName,
 } from "../lib/delegate.js";
 import { loadDelegateConfig } from "../lib/config.js";
 import {
@@ -162,7 +163,44 @@ function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
     getLabel: (entryId) => ctx.sessionManager.getLabel(entryId),
     env: process.env,
     piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
+    // Naming fields — populated by enrichRuntimeWithNaming()
+    parentSessionName: undefined,
+    delegateIndex: undefined,
   };
+}
+
+/**
+ * Resolve parent session name and delegate index, enriching the runtime context.
+ * When the parent has no name, auto-generates one and persists it via pi.appendEntry.
+ */
+async function enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries) {
+  const parentCwd = runtime.parentCwd;
+  const gitContext = await getGitContext(parentCwd);
+  const parentNameResult = resolveParentSessionName(rawBranchEntries, gitContext);
+
+  runtime.parentSessionName = parentNameResult.name;
+
+  // If name was auto-generated, persist it to the parent session
+  if (parentNameResult.generated) {
+    try {
+      pi.appendEntry("session_info", { name: parentNameResult.name });
+    } catch {
+      // best-effort — if session_info isn't supported as a direct type, skip
+    }
+  }
+
+  // Get delegate index from registry
+  let delegateIndex = 1;
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (scope) {
+      const result = await listWorkersForScope(scope, { env: process.env });
+      delegateIndex = result.workers.filter((w) => !w.record.cleanedAt).length + 1;
+    }
+  } catch {
+    // best-effort — fall back to 1
+  }
+  runtime.delegateIndex = delegateIndex;
 }
 
 function sendDelegateMessage(pi, content, details) {
@@ -242,6 +280,7 @@ export default function delegateExtension(pi) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const rawBranchEntries = ctx.sessionManager.getBranch();
       const runtime = buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true });
+      await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
       const config = await getConfig();
       const request = applyConfigDefaults(
         {
@@ -293,7 +332,9 @@ async function handleStart(pi, ctx, parsed) {
   try {
     const config = await getConfig();
     const request = applyConfigDefaults(parsed.request, config);
-    const result = await delegateTask(request, buildRuntimeContext(ctx, rawBranchEntries));
+    const runtime = buildRuntimeContext(ctx, rawBranchEntries);
+    await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
+    const result = await delegateTask(request, runtime);
     appendDelegateEntries(pi, result);
 
     // Persist to registry (best-effort)
