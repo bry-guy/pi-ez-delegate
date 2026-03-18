@@ -190,9 +190,30 @@ test("buildDelegatedPrompt includes merge instructions when automerge is true an
     automerge: true,
   });
   assert.match(prompt, /when your task is complete/i);
-  assert.match(prompt, /git -C \/tmp\/repo merge ezdg\/test-worker/);
-  assert.match(prompt, /worktree remove/);
-  assert.match(prompt, /branch -d ezdg\/test-worker/);
+  // Single chained command that cds to main checkout first
+  assert.match(prompt, /cd \/tmp\/repo && git merge ezdg\/test-worker/);
+  assert.match(prompt, /&& git worktree remove --force \/tmp\/worktrees\/test-worker/);
+  assert.match(prompt, /&& git branch -d ezdg\/test-worker/);
+});
+
+test("buildDelegatedPrompt quotes paths with spaces in automerge command", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/my repo",
+    requestedCwd: "/tmp/my repo",
+    effectiveCwd: "/tmp/my worktrees/test-worker",
+    worktree: {
+      created: true,
+      mainCheckoutPath: "/tmp/my repo",
+      worktreePath: "/tmp/my worktrees/test-worker",
+      taskBranch: "ezdg/test-worker",
+      baseBranch: "main",
+    },
+    automerge: true,
+  });
+  assert.match(prompt, /cd '\/tmp\/my repo'/);
+  assert.match(prompt, /worktree remove --force '\/tmp\/my worktrees\/test-worker'/);
 });
 
 test("buildDelegatedPrompt omits merge instructions when automerge is false", () => {
