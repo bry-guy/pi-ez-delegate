@@ -10,10 +10,12 @@ import {
   buildDelegateState,
   buildDelegatedPrompt,
   createForkedSessionFile,
+  deriveWorkerName,
   getActiveDelegateState,
   getForkBranchEntries,
   getParentEffectiveCwd,
   parseDelegateCommandInput,
+  resolveParentSessionName,
   sanitizeEntriesForFork,
   validateDelegateRequest,
 } from "../lib/delegate.js";
@@ -475,4 +477,90 @@ test("createForkedSessionFile preserves parentId chain across filtered entries",
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     await rm(tempAgentDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Hierarchical session naming
+// ---------------------------------------------------------------------------
+
+test("deriveWorkerName with parentSessionName produces hierarchical names", () => {
+  const result = deriveWorkerName("implement auth middleware", undefined, {
+    parentSessionName: "ezdg-v2",
+    delegateIndex: 1,
+  });
+  assert.equal(result.sessionName, "ezdg-v2-dg-1-implement-auth-middleware");
+  assert.ok(result.tmuxName.startsWith("ezdg-v2-dg-1"));
+});
+
+test("deriveWorkerName with explicit name and parentSessionName", () => {
+  const result = deriveWorkerName("implement auth middleware", "auth-work", {
+    parentSessionName: "myproject",
+    delegateIndex: 3,
+  });
+  assert.equal(result.sessionName, "myproject-dg-3-auth-work");
+});
+
+test("deriveWorkerName without options keeps backward compat", () => {
+  const result = deriveWorkerName("implement auth middleware");
+  assert.equal(result.sessionName, "ezdg:implement auth middleware");
+});
+
+test("deriveWorkerName with parentSessionName uses shorter task summary", () => {
+  const result = deriveWorkerName("implement the auth middleware for the api gateway service", undefined, {
+    parentSessionName: "proj",
+    delegateIndex: 2,
+  });
+  // Should truncate to 4 words for the name when parent context is present
+  assert.equal(result.name, "implement the auth middleware");
+  assert.equal(result.slug, "implement-the-auth-middleware");
+});
+
+test("deriveWorkerName with parentSessionName truncates tmuxName to 48 chars", () => {
+  const result = deriveWorkerName("a very long task description that will need truncation", undefined, {
+    parentSessionName: "a-really-long-parent-session-name",
+    delegateIndex: 99,
+  });
+  assert.ok(result.tmuxName.length <= 48);
+});
+
+test("resolveParentSessionName finds name from session_info entries", () => {
+  const entries = [
+    { type: "session_info", name: "my-session" },
+    { type: "message", id: "m1" },
+  ];
+  const result = resolveParentSessionName(entries, { mainCheckoutPath: "/tmp/repo" });
+  assert.equal(result.name, "my-session");
+  assert.equal(result.generated, false);
+});
+
+test("resolveParentSessionName uses latest session_info entry", () => {
+  const entries = [
+    { type: "session_info", name: "old-name" },
+    { type: "message", id: "m1" },
+    { type: "session_info", name: "new-name" },
+  ];
+  const result = resolveParentSessionName(entries, { mainCheckoutPath: "/tmp/repo" });
+  assert.equal(result.name, "new-name");
+  assert.equal(result.generated, false);
+});
+
+test("resolveParentSessionName auto-generates from git context", () => {
+  const result = resolveParentSessionName([], { mainCheckoutPath: "/tmp/my-cool-project" });
+  assert.equal(result.name, "my-cool-proj");
+  assert.equal(result.generated, true);
+});
+
+test("resolveParentSessionName falls back to random prefix without git", () => {
+  const result = resolveParentSessionName([], null);
+  assert.match(result.name, /^pi-[a-f0-9]{4}$/);
+  assert.equal(result.generated, true);
+});
+
+test("resolveParentSessionName skips session_info entries without name", () => {
+  const entries = [
+    { type: "session_info" },
+    { type: "session_info", name: "" },
+  ];
+  const result = resolveParentSessionName(entries, { mainCheckoutPath: "/tmp/repo" });
+  assert.equal(result.generated, true);
 });
