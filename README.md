@@ -152,7 +152,20 @@ When the delegated cwd is inside the **same git repo** as the parent session, `p
 
 That keeps delegated workers from colliding in the same checkout.
 
+Important nuance: today the delegated worker session is started with its session cwd rooted at the delegated worktree's effective cwd.
+
+That means `pi-ez-delegate` currently chooses a **session-rooted worktree** model for delegated same-repo workers, rather than a pure "keep the original cwd and only route tools into the worktree" model.
+
+Tradeoffs of the current behavior:
+
+- the worker feels naturally rooted in the delegated files it is supposed to edit
+- but cleanup can be more awkward if another integration assumes worktrees are only tool-routed
+- long-lived workers rooted inside the worktree can make `git worktree remove` / branch cleanup feel surprising
+- users may conflate the worker session cwd with ez-worktree's effective routed cwd contract
+
 If the delegated cwd is in a different repo or not in git, worktree creation is skipped cleanly.
+
+If you want to avoid same-repo worktree rooting entirely for a worker, use `--no-worktree`.
 
 ## Session behavior
 
@@ -161,6 +174,12 @@ The worker session is a **forked session file**, not a blank new run.
 It inherits the current conversation branch, but intentionally drops non-context custom extension state so workers do not accidentally restore parent runtime state such as active `pi-ez-worktree` routing.
 
 parentId chains are preserved across filtered entries so pi's session tree traversal remains valid in the forked session.
+
+For extension authors composing on top of `pi-ez-delegate` or `pi-ez-worktree`:
+
+- do not assume ez-worktree itself relocates pi's real session cwd
+- be explicit about whether your worker model is **session-rooted in the worktree** or **session stays put and tools are routed into the worktree**
+- document that choice for users, because the ergonomics and cleanup behavior differ
 
 The worker session gets its own display name in the form:
 
