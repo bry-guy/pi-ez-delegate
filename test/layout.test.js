@@ -89,6 +89,23 @@ test("auto: errors when rail is full (all panes too short)", () => {
   );
 });
 
+test("auto: minPaneRows=0 disables rail height checks", () => {
+  const panes = makePanes([
+    ["%1", 200, 60],
+    ["%2", 200, 8],
+  ]);
+  const result = planTmuxPaneLaunch({
+    panes,
+    originPaneId: "%1",
+    windowWidth: WIDE_WINDOW,
+    railPaneIds: ["%2"],
+    minPaneRows: 0,
+  });
+  assert.equal(result.splitMode, "horizontal");
+  assert.equal(result.targetPaneId, "%2");
+  assert.equal(result.createdRail, false);
+});
+
 test("explicit vertical: errors when rail already exists", () => {
   const panes = makePanes([
     ["%1", 200, 60],
