@@ -68,12 +68,20 @@ function applyConfigDefaults(request, config) {
     patched.target = config.defaultTarget;
   }
 
-  // Forward layout thresholds so delegateTask can use them (once --split is wired)
-  patched.minPaneColumns = patched.minPaneColumns ?? config.minPaneColumns;
-  patched.minPaneRows = patched.minPaneRows ?? config.minPaneRows;
-  patched.defaultPaneSplit = patched.defaultPaneSplit ?? config.defaultPaneSplit;
+  // Respect configured default pane split when request did not specify one.
+  if ((patched.split === undefined || patched.split === "auto") && config.defaultPaneSplit && config.defaultPaneSplit !== "auto") {
+    patched.split = config.defaultPaneSplit;
+  }
 
   return patched;
+}
+
+function applyRuntimeConfig(runtime, config) {
+  return {
+    ...runtime,
+    minPaneColumns: config.minPaneColumns,
+    minPaneRows: config.minPaneRows,
+  };
 }
 
 const delegateSchema = Type.Object({
@@ -163,6 +171,8 @@ function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
     getLabel: (entryId) => ctx.sessionManager.getLabel(entryId),
     env: process.env,
     piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
+    minPaneColumns: options.minPaneColumns,
+    minPaneRows: options.minPaneRows,
     // Naming fields — populated by enrichRuntimeWithNaming()
     parentSessionName: undefined,
     delegateIndex: undefined,
@@ -279,9 +289,13 @@ export default function delegateExtension(pi) {
     parameters: delegateSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const rawBranchEntries = ctx.sessionManager.getBranch();
-      const runtime = buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true });
-      await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
       const config = await getConfig();
+      const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
+        excludeTrailingDelegateToolCall: true,
+        minPaneColumns: config.minPaneColumns,
+        minPaneRows: config.minPaneRows,
+      });
+      await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
       const request = applyConfigDefaults(
         {
           task: params.task,
@@ -332,7 +346,10 @@ async function handleStart(pi, ctx, parsed) {
   try {
     const config = await getConfig();
     const request = applyConfigDefaults(parsed.request, config);
-    const runtime = buildRuntimeContext(ctx, rawBranchEntries);
+    const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
+      minPaneColumns: config.minPaneColumns,
+      minPaneRows: config.minPaneRows,
+    });
     await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
     const result = await delegateTask(request, runtime);
     appendDelegateEntries(pi, result);
