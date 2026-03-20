@@ -30,6 +30,7 @@ import {
   formatWorkerList,
   formatCleanPreview,
   formatCleanResult,
+  getWorkerTmuxTarget,
 } from "../lib/manager.js";
 import { attachToTmuxTarget } from "../lib/tmux.js";
 
@@ -409,9 +410,8 @@ async function handleAttach(pi, ctx, parsed) {
       return;
     }
 
-    const targetMode = worker.record.targetMode || "pane";
-    const targetId = worker.record.paneId || worker.record.windowId || worker.record.sessionId;
-    await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName: worker.record.slug });
+    const { targetMode, targetId, sessionName } = getWorkerTmuxTarget(worker.record);
+    await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName });
 
     if (ctx.hasUI) ctx.ui.notify(`Attached to ${worker.record.name}`, "success");
     sendDelegateMessage(pi, `Attached to ${worker.record.name} (${targetMode} ${targetId}).`, { status: "success" });
@@ -439,9 +439,8 @@ async function handleOpen(pi, ctx, parsed) {
     }
 
     if (worker.live) {
-      const targetMode = worker.record.targetMode || "pane";
-      const targetId = worker.record.paneId || worker.record.windowId || worker.record.sessionId;
-      await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName: worker.record.slug });
+      const { targetMode, targetId, sessionName } = getWorkerTmuxTarget(worker.record);
+      await attachToTmuxTarget(targetMode, targetId, { env: process.env, sessionName });
       if (ctx.hasUI) ctx.ui.notify(`Worker "${worker.record.name}" is live — attached`, "success");
       sendDelegateMessage(pi, `Worker "${worker.record.name}" is live. Attached to ${targetMode} ${targetId}.`, { status: "success" });
       return;
@@ -467,6 +466,7 @@ async function handleOpen(pi, ctx, parsed) {
       paneId: relaunch.launch.paneId,
       windowId: relaunch.launch.windowId,
       sessionId: relaunch.launch.sessionId,
+      tmuxSessionName: relaunch.launch.sessionName,
       originPaneId: relaunch.launch.originPaneId,
       originWindowId: relaunch.launch.originWindowId,
     };

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import {
   DELEGATE_COMMAND,
@@ -15,10 +17,15 @@ import {
   getForkBranchEntries,
   getParentEffectiveCwd,
   parseDelegateCommandInput,
+  planDelegatedWorkspace,
+  resolveDelegatedLaunchCwd,
   resolveParentSessionName,
   sanitizeEntriesForFork,
   validateDelegateRequest,
+  verifyDelegatedWorkspace,
 } from "../lib/delegate.js";
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Subcommand parsing
@@ -584,4 +591,51 @@ test("resolveParentSessionName skips session_info entries without name", () => {
   ];
   const result = resolveParentSessionName(entries, { mainCheckoutPath: "/tmp/repo" });
   assert.equal(result.generated, true);
+});
+
+async function runGit(cwd, args) {
+  await execFileAsync("git", args, { cwd });
+}
+
+test("resolveDelegatedLaunchCwd prefers the effective delegated cwd", () => {
+  assert.equal(resolveDelegatedLaunchCwd("/tmp/parent", "/tmp/worktree/subdir"), "/tmp/worktree/subdir");
+  assert.equal(resolveDelegatedLaunchCwd("/tmp/parent", undefined), "/tmp/parent");
+});
+
+test("planDelegatedWorkspace creates and verifies a clean worker branch in its worktree", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-worktree-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await writeFile(join(tempRoot, "seed.txt"), "seed\n", "utf8");
+    await rm(repoDir, { recursive: true, force: true });
+    await mkdir(repoDir, { recursive: true });
+    await runGit(repoDir, ["init", "-b", "main"]);
+    await runGit(repoDir, ["config", "user.name", "Pi Delegate Test"]);
+    await runGit(repoDir, ["config", "user.email", "pi-delegate@example.com"]);
+    await writeFile(join(repoDir, "README.md"), "# test\n", "utf8");
+    await runGit(repoDir, ["add", "README.md"]);
+    await runGit(repoDir, ["commit", "-m", "chore: seed repo"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "branch-check",
+    });
+
+    assert.equal(worktree.created, true);
+    assert.equal(worktree.taskBranch, "ezdg/branch-check");
+    assert.equal(worktree.verification?.verified, true);
+    assert.match(worktree.effectiveCwd, /branch-check\/packages\/api$/);
+
+    const verified = await verifyDelegatedWorkspace(worktree, worktree.effectiveCwd);
+    assert.equal(verified.verified, true);
+    assert.equal(verified.branch, "ezdg/branch-check");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });

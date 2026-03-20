@@ -8,6 +8,8 @@ import {
   formatWorkerList,
   formatCleanPreview,
   formatCleanResult,
+  getWorkerLivenessProbePlan,
+  getWorkerTmuxTarget,
 } from "../lib/manager.js";
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,34 @@ test("classifyWorker returns dead-safe-to-clean when worktree is clean", () => {
 
 test("classifyWorker returns dead-safe-to-clean for session-only workers", () => {
   assert.equal(classifyWorker(false, true, false, undefined), WORKER_STATUS.DEAD_SAFE_TO_CLEAN);
+});
+
+test("getWorkerLivenessProbePlan uses pane only for pane workers", () => {
+  assert.deepEqual(getWorkerLivenessProbePlan({ targetMode: "pane", paneId: "%9", windowId: "@2", sessionId: "$1" }), [
+    { mode: "pane", targetId: "%9" },
+  ]);
+});
+
+test("getWorkerLivenessProbePlan uses mode fallback for legacy workers", () => {
+  assert.deepEqual(getWorkerLivenessProbePlan({ paneId: "%9", windowId: "@2", sessionId: "$1" }), [
+    { mode: "pane", targetId: "%9" },
+    { mode: "window", targetId: "@2" },
+    { mode: "session", targetId: "$1" },
+  ]);
+});
+
+test("getWorkerTmuxTarget returns authoritative window target", () => {
+  assert.deepEqual(
+    getWorkerTmuxTarget({ targetMode: "window", paneId: "%9", windowId: "@2", slug: "my-worker" }),
+    { targetMode: "window", targetId: "@2", sessionName: "my-worker" },
+  );
+});
+
+test("getWorkerTmuxTarget prefers persisted tmux session name", () => {
+  assert.deepEqual(
+    getWorkerTmuxTarget({ targetMode: "session", sessionId: "$3", slug: "short-name", tmuxSessionName: "actual-session-name" }),
+    { targetMode: "session", targetId: "$3", sessionName: "actual-session-name" },
+  );
 });
 
 // ---------------------------------------------------------------------------

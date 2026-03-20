@@ -54,6 +54,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
       mode: "pane",
       targetId: "%42",
       windowId: "@2",
+      sessionName: "registry-worker-session",
       originPaneId: "%1",
       originWindowId: "@2",
     },
@@ -68,6 +69,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
   assert.equal(record.targetId, "%42");
   assert.equal(record.windowId, "@2");
   assert.equal(record.paneId, "%42");
+  assert.equal(record.tmuxSessionName, "registry-worker-session");
   assert.equal(record.originPaneId, "%1");
   assert.equal(record.originWindowId, "@2");
   assert.equal(record.taskBranch, "ezdg/registry-worker");
@@ -88,7 +90,7 @@ test("writeWorkerRegistry and readWorkerRegistry round-trip records", async () =
       worker: { name: "cleanup-worker", slug: "cleanup-worker" },
       session: { sessionFile: "/tmp/cleanup-worker.jsonl" },
       cwd: { requested: "/tmp/project", effective: "/tmp/project" },
-      launch: { adapter: "tmux", mode: "window", targetId: "@3" },
+      launch: { adapter: "tmux", mode: "window", targetId: "@3", sessionName: "cleanup-worker-window" },
     });
     const nextRegistry = upsertWorkerRecord(registry, record);
 
@@ -110,6 +112,7 @@ test("writeWorkerRegistry and readWorkerRegistry round-trip records", async () =
     assert.equal(loaded.registry.workers[0].name, "cleanup-worker");
     assert.equal(loaded.registry.workers[0].targetMode, "window");
     assert.equal(loaded.registry.workers[0].targetId, "@3");
+    assert.equal(loaded.registry.workers[0].tmuxSessionName, "cleanup-worker-window");
   } finally {
     await rm(tempAgentDir, { recursive: true, force: true });
   }
