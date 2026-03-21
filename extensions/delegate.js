@@ -16,6 +16,7 @@ import {
   getForkBranchEntries,
   getGitContext,
   getParentEffectiveCwd,
+  isDelegatedWorkerSession,
   parseDelegateCommandInput,
   resolveParentSessionName,
 } from "../lib/delegate.js";
@@ -177,10 +178,17 @@ function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
     piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
     minPaneColumns: options.minPaneColumns,
     minPaneRows: options.minPaneRows,
+    isDelegatedWorker: Boolean(ctx.sessionManager.getHeader()?.parentSession),
     // Naming fields — populated by enrichRuntimeWithNaming()
     parentSessionName: undefined,
     delegateIndex: undefined,
   };
+}
+
+function assertNotNestedDelegate(isDelegatedWorker, action = "launch delegates") {
+  if (isDelegatedWorker) {
+    throw new Error(`Delegated workers may not ${action}. Use the parent session to spawn new workers.`);
+  }
 }
 
 /**
@@ -288,6 +296,7 @@ export default function delegateExtension(pi) {
     promptSnippet: "Delegate an independent task into a forked tmux worker session.",
     promptGuidelines: [
       "Use this tool only for independent workstreams with clear ownership boundaries.",
+      "Delegated workers must never spawn more delegates; only the parent session may launch workers.",
       "Default to target pane unless the user explicitly asks for a different tmux target.",
       "Prefer createWorktree=true for same-repo coding work so delegated workers do not collide in the same checkout.",
       `The user-facing slash command is /${DELEGATE_COMMAND}.`,
@@ -301,6 +310,7 @@ export default function delegateExtension(pi) {
         minPaneColumns: config.minPaneColumns,
         minPaneRows: config.minPaneRows,
       });
+      assertNotNestedDelegate(runtime.isDelegatedWorker, "launch new delegates");
       await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
       const request = applyConfigDefaults(
         {
@@ -350,6 +360,7 @@ async function handleStart(pi, ctx, parsed) {
   const rawBranchEntries = ctx.sessionManager.getBranch();
 
   try {
+    assertNotNestedDelegate(Boolean(ctx.sessionManager.getHeader()?.parentSession), "launch new delegates");
     const config = await getConfig();
     const request = applyConfigDefaults(parsed.request, config);
     const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
@@ -453,6 +464,7 @@ async function handleOpen(pi, ctx, parsed) {
 
     // Dead — relaunch
     const rawBranchEntries = ctx.sessionManager.getBranch();
+    assertNotNestedDelegate(Boolean(ctx.sessionManager.getHeader()?.parentSession), "relaunch workers");
     const delegateState = getActiveDelegateState(rawBranchEntries);
     const originPaneId = delegateState?.originPaneId || process.env.TMUX_PANE;
 

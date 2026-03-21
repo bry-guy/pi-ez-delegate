@@ -17,6 +17,7 @@ import {
   getActiveDelegateState,
   getForkBranchEntries,
   getParentEffectiveCwd,
+  isDelegatedWorkerSession,
   parseDelegateCommandInput,
   planDelegatedWorkspace,
   resolveDelegatedLaunchCwd,
@@ -24,6 +25,7 @@ import {
   sanitizeEntriesForFork,
   validateDelegateRequest,
   verifyDelegatedWorkspace,
+  delegateTask,
 } from "../lib/delegate.js";
 import { finishWorker } from "../lib/manager.js";
 import { readWorkerRegistry } from "../lib/registry.js";
@@ -227,6 +229,30 @@ test("validateDelegateRequest defaults printMode to true", () => {
   assert.equal(result.printMode, true);
 });
 
+test("delegateTask rejects nested delegates", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-nested-guard-`));
+  try {
+    await assert.rejects(
+      () =>
+        delegateTask(
+          { task: "spawn another worker", target: "pane" },
+          {
+            branchEntries: [],
+            parentCwd: tempRoot,
+            parentSessionFile: join(tempRoot, "session.jsonl"),
+            headerVersion: 3,
+            getLabel: () => undefined,
+            env: process.env,
+            isDelegatedWorker: true,
+          },
+        ),
+      /Delegated workers may not spawn additional delegates/i,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // buildDelegatedPrompt automerge instructions
 // ---------------------------------------------------------------------------
@@ -309,6 +335,20 @@ test("buildDelegatedPrompt omits merge instructions when no worktree", () => {
   assert.ok(!prompt.includes("when your task is complete"));
 });
 
+test("buildDelegatedPrompt tells workers not to spawn delegates", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/repo",
+    requestedCwd: "/tmp/repo",
+    effectiveCwd: "/tmp/repo",
+    worktree: { created: false, reason: "disabled", effectiveCwd: "/tmp/repo" },
+    automerge: true,
+  });
+  assert.match(prompt, /must never call delegate_task/i);
+  assert.match(prompt, /Only the parent session may launch workers/i);
+});
+
 // ---------------------------------------------------------------------------
 // Parent cwd / delegate state
 // ---------------------------------------------------------------------------
@@ -358,6 +398,30 @@ test("getActiveDelegateState returns the latest active delegate state", () => {
     originPaneId: "%2",
     originWindowId: "@3",
   });
+});
+
+test("isDelegatedWorkerSession detects active delegate state", () => {
+  assert.equal(
+    isDelegatedWorkerSession([
+      {
+        type: "custom",
+        customType: DELEGATE_STATE_ENTRY_TYPE,
+        data: { active: true, workerId: "worker-1" },
+      },
+    ]),
+    true,
+  );
+  assert.equal(isDelegatedWorkerSession([]), false);
+  assert.equal(
+    isDelegatedWorkerSession([
+      {
+        type: "custom",
+        customType: DELEGATE_STATE_ENTRY_TYPE,
+        data: { active: false, workerId: "worker-1" },
+      },
+    ]),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
