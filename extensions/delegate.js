@@ -25,11 +25,13 @@ import {
   findWorkerByNameOrId,
   reopenWorker,
   cleanSafeWorkers,
+  finishWorker,
   persistLaunchToRegistry,
   persistReopenToRegistry,
   formatWorkerList,
   formatCleanPreview,
   formatCleanResult,
+  formatFinishResult,
   getWorkerTmuxTarget,
 } from "../lib/manager.js";
 import { attachToTmuxTarget } from "../lib/tmux.js";
@@ -116,6 +118,7 @@ function getDelegateArgumentCompletions(prefix) {
       { value: "list", label: "list", description: "List workers" },
       { value: "attach ", label: "attach", description: "Attach to a live worker" },
       { value: "open ", label: "open", description: "Open a worker" },
+      { value: "finish ", label: "finish", description: "Merge and clean up a completed dead worker" },
       { value: "clean ", label: "clean", description: "Clean dead workers" },
       { value: "help", label: "help", description: "Show help" },
     ];
@@ -269,6 +272,8 @@ export default function delegateExtension(pi) {
           return handleAttach(pi, ctx, parsed);
         case "open":
           return handleOpen(pi, ctx, parsed);
+        case "finish":
+          return handleFinish(pi, ctx, parsed);
         case "clean":
           return handleClean(pi, ctx, parsed);
       }
@@ -478,6 +483,36 @@ async function handleOpen(pi, ctx, parsed) {
       `Reopened "${worker.record.name}" in ${relaunch.launch.mode} ${relaunch.launch.targetId}.\nSwitch: ${relaunch.launch.attachHint}`,
       { status: "success" },
     );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (ctx.hasUI) ctx.ui.notify(message, "error");
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
+
+async function handleFinish(pi, ctx, parsed) {
+  try {
+    const scope = await getRegistryScope(ctx);
+    if (!scope) {
+      sendDelegateMessage(pi, "Not inside a git repository.", { status: "error" });
+      return;
+    }
+
+    const result = await listWorkersForScope(scope, { env: process.env });
+    const worker = findWorkerByNameOrId(result.workers, parsed.request.nameOrId);
+
+    if (!worker) {
+      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
+      return;
+    }
+
+    const finishResult = await finishWorker(
+      { scope, registry: result.registry, registryPath: result.registryPath },
+      worker,
+    );
+
+    if (ctx.hasUI) ctx.ui.notify(`Finished ${worker.record.name}`, "success");
+    sendDelegateMessage(pi, formatFinishResult(finishResult), { status: "success" });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (ctx.hasUI) ctx.ui.notify(message, "error");

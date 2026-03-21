@@ -22,14 +22,14 @@ Implemented:
 - **Session forking:** worker gets a forked session file with the current conversation branch
 - **Same-repo worktrees:** enabled by default unless `--no-worktree` is used
 - **Worker registry:** persistent per-repo registry for cross-session worker discovery
-- **Worker lifecycle:** list, attach, open, and clean subcommands
+- **Worker lifecycle:** list, attach, open, finish, and clean subcommands
 - **Live/dead detection:** tmux target inspection for liveness checks
 - **Safe cleanup:** conservative dead-worker cleanup with dry-run preview
+- **Safe finish:** guarded merge-back, worktree removal, branch deletion, and session cleanup for completed workers
 - **Replay safety:** parentId chain preservation when forking sessions
 - **Single-rail pane layout:** configurable min columns/rows for auto layout decisions
 
 Not implemented yet:
-- `--split auto|horizontal|vertical` flag (layout module exists but not wired to launch)
 - `--model` / `--pick-model` flags
 - zellij adapter
 - completion signaling back from workers to parents
@@ -74,6 +74,16 @@ Switches tmux focus to the worker's pane/window/session. Fails with a suggestion
 
 If the worker is live, attaches to it. If dead, relaunches from its saved session file and worktree.
 
+#### Finish a completed worker
+
+```text
+/ezdg finish <name-or-id>
+```
+
+For a completed dead worker, merges its delegated branch back into the delegator branch, removes the worker worktree, deletes the worker branch, deletes the saved worker session file, and marks the registry record cleaned.
+
+Finish refuses to run while the worker is still live, or when the delegator branch is dirty or in the middle of a merge/rebase.
+
 #### Clean dead workers
 
 ```text
@@ -99,6 +109,7 @@ Workers with dirty worktrees, branches ahead of base, or in-progress rebases/mer
 /ezdg list
 /ezdg open my-worker
 /ezdg attach my-worker
+/ezdg finish my-worker
 /ezdg clean --yes
 ```
 

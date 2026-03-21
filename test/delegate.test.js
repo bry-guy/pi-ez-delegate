@@ -10,6 +10,7 @@ import {
   DELEGATE_COMMAND,
   DELEGATE_STATE_ENTRY_TYPE,
   buildDelegateState,
+  buildDelegatedFinishCommand,
   buildDelegatedPrompt,
   createForkedSessionFile,
   deriveWorkerName,
@@ -24,6 +25,8 @@ import {
   validateDelegateRequest,
   verifyDelegatedWorkspace,
 } from "../lib/delegate.js";
+import { finishWorker } from "../lib/manager.js";
+import { readWorkerRegistry } from "../lib/registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +82,20 @@ test("parseDelegateCommandInput open subcommand with target", () => {
   assert.equal(request.nameOrId, "my-worker");
   assert.equal(request.target, "window");
   assert.deepEqual(errors, []);
+});
+
+test("parseDelegateCommandInput finish subcommand", () => {
+  const { subcommand, request, errors } = parseDelegateCommandInput("finish my-worker");
+  assert.equal(subcommand, "finish");
+  assert.equal(request.nameOrId, "my-worker");
+  assert.deepEqual(errors, []);
+});
+
+test("parseDelegateCommandInput finish without name errors", () => {
+  const { subcommand, errors } = parseDelegateCommandInput("finish");
+  assert.equal(subcommand, "finish");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /missing/i);
 });
 
 test("parseDelegateCommandInput clean subcommand", () => {
@@ -199,8 +216,10 @@ test("buildDelegatedPrompt includes merge instructions when automerge is true an
     automerge: true,
   });
   assert.match(prompt, /when your task is complete/i);
-  // Single chained command that cds to main checkout first
-  assert.match(prompt, /cd \/tmp\/repo && git merge ezdg\/test-worker/);
+  assert.match(prompt, /cd \/tmp\/repo/);
+  assert.match(prompt, /git diff --quiet/);
+  assert.match(prompt, /git diff --cached --quiet/);
+  assert.match(prompt, /git merge ezdg\/test-worker/);
   assert.match(prompt, /&& git worktree remove --force \/tmp\/worktrees\/test-worker/);
   assert.match(prompt, /&& git branch -d ezdg\/test-worker/);
 });
@@ -597,6 +616,22 @@ async function runGit(cwd, args) {
   await execFileAsync("git", args, { cwd });
 }
 
+async function gitStdout(cwd, args) {
+  const result = await execFileAsync("git", args, { cwd });
+  return result.stdout.trim();
+}
+
+async function initTestRepo(repoDir) {
+  await rm(repoDir, { recursive: true, force: true });
+  await mkdir(repoDir, { recursive: true });
+  await runGit(repoDir, ["init", "-b", "main"]);
+  await runGit(repoDir, ["config", "user.name", "Pi Delegate Test"]);
+  await runGit(repoDir, ["config", "user.email", "pi-delegate@example.com"]);
+  await writeFile(join(repoDir, "README.md"), "# test\n", "utf8");
+  await runGit(repoDir, ["add", "README.md"]);
+  await runGit(repoDir, ["commit", "-m", "chore: seed repo"]);
+}
+
 test("resolveDelegatedLaunchCwd prefers the effective delegated cwd", () => {
   assert.equal(resolveDelegatedLaunchCwd("/tmp/parent", "/tmp/worktree/subdir"), "/tmp/worktree/subdir");
   assert.equal(resolveDelegatedLaunchCwd("/tmp/parent", undefined), "/tmp/parent");
@@ -608,14 +643,7 @@ test("planDelegatedWorkspace creates and verifies a clean worker branch in its w
 
   try {
     await writeFile(join(tempRoot, "seed.txt"), "seed\n", "utf8");
-    await rm(repoDir, { recursive: true, force: true });
-    await mkdir(repoDir, { recursive: true });
-    await runGit(repoDir, ["init", "-b", "main"]);
-    await runGit(repoDir, ["config", "user.name", "Pi Delegate Test"]);
-    await runGit(repoDir, ["config", "user.email", "pi-delegate@example.com"]);
-    await writeFile(join(repoDir, "README.md"), "# test\n", "utf8");
-    await runGit(repoDir, ["add", "README.md"]);
-    await runGit(repoDir, ["commit", "-m", "chore: seed repo"]);
+    await initTestRepo(repoDir);
 
     const srcDir = join(repoDir, "packages", "api");
     await execFileAsync("mkdir", ["-p", srcDir]);
@@ -638,4 +666,381 @@ test("planDelegatedWorkspace creates and verifies a clean worker branch in its w
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("planDelegatedWorkspace bases the worker on the current delegator branch, not always main", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-branch-base-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+    await writeFile(join(repoDir, "feature.txt"), "feature base\n", "utf8");
+    await runGit(repoDir, ["add", "feature.txt"]);
+    await runGit(repoDir, ["commit", "-m", "feat: create delegator base branch"]);
+
+    const srcDir = join(repoDir, "packages", "web");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "follow-parent-branch",
+    });
+
+    assert.equal(worktree.created, true);
+    assert.equal(worktree.baseBranch, "feature/delegator-base");
+    assert.equal(worktree.taskBranch, "ezdg/follow-parent-branch");
+
+    const branchResult = await execFileAsync("git", ["branch", "--show-current"], { cwd: worktree.effectiveCwd });
+    assert.equal(branchResult.stdout.trim(), "ezdg/follow-parent-branch");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("planDelegatedWorkspace rejects launching a same-repo delegate from a dirty parent checkout", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-dirty-parent-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await writeFile(join(repoDir, "README.md"), "# dirty parent\n", "utf8");
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    await assert.rejects(
+      () =>
+        planDelegatedWorkspace({
+          currentCwd: repoDir,
+          requestedCwd: srcDir,
+          createWorktree: true,
+          workerSlug: "should-refuse-dirty-parent",
+        }),
+      /dirty|clean|uncommitted|pending changes/i,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("planDelegatedWorkspace rejects launching when the parent checkout has a merge in progress", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-merge-parent-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    const gitDir = (await execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: repoDir })).stdout.trim();
+    await writeFile(join(gitDir, "MERGE_HEAD"), "deadbeef\n", "utf8");
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    await assert.rejects(
+      () =>
+        planDelegatedWorkspace({
+          currentCwd: repoDir,
+          requestedCwd: srcDir,
+          createWorktree: true,
+          workerSlug: "should-refuse-merge-parent",
+        }),
+      /merge in progress|clean parent checkout/i,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("planDelegatedWorkspace rejects launching when the parent checkout has a rebase in progress", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-rebase-parent-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    const gitDir = (await execFileAsync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: repoDir })).stdout.trim();
+    await mkdir(join(gitDir, "rebase-merge"), { recursive: true });
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    await assert.rejects(
+      () =>
+        planDelegatedWorkspace({
+          currentCwd: repoDir,
+          requestedCwd: srcDir,
+          createWorktree: true,
+          workerSlug: "should-refuse-rebase-parent",
+        }),
+      /rebasing|rebase|clean parent checkout/i,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildDelegatedPrompt completion command merges back into the delegator's current branch checkout", () => {
+  const prompt = buildDelegatedPrompt({
+    task: "implement feature",
+    workerName: "test-worker",
+    parentCwd: "/tmp/repo",
+    requestedCwd: "/tmp/repo/packages/api",
+    effectiveCwd: "/tmp/.pi-worktrees/repo/test-worker/packages/api",
+    worktree: {
+      created: true,
+      mainCheckoutPath: "/tmp/repo",
+      worktreePath: "/tmp/.pi-worktrees/repo/test-worker",
+      taskBranch: "ezdg/test-worker",
+      baseBranch: "feature/delegator-base",
+    },
+    automerge: true,
+  });
+
+  assert.match(prompt, /cd \/tmp\/repo/);
+  assert.match(prompt, /git diff --quiet/);
+  assert.match(prompt, /git diff --cached --quiet/);
+  assert.match(prompt, /git merge ezdg\/test-worker/);
+  assert.match(prompt, /git worktree remove --force \/tmp\/\.pi-worktrees\/repo\/test-worker/);
+  assert.match(prompt, /git branch -d ezdg\/test-worker/);
+});
+
+test("worker commit lands on the worker branch and not the parent branch", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-worker-commit-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const parentHeadBefore = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "commit-isolated",
+    });
+
+    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "worker-only\n", "utf8");
+    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
+    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: worker isolated commit"]);
+
+    const parentHeadAfter = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    const workerHead = await gitStdout(worktree.effectiveCwd, ["rev-parse", "HEAD"]);
+    const parentBranch = await gitStdout(repoDir, ["branch", "--show-current"]);
+    const workerBranch = await gitStdout(worktree.effectiveCwd, ["branch", "--show-current"]);
+
+    assert.equal(parentBranch, "feature/delegator-base");
+    assert.equal(workerBranch, "ezdg/commit-isolated");
+    assert.equal(parentHeadAfter, parentHeadBefore);
+    assert.notEqual(workerHead, parentHeadBefore);
+    await assert.rejects(() => readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("parent branch stays unchanged until the delegated finish command merges and cleans up", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-merge-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const parentHeadBefore = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "finish-merge",
+    });
+
+    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "merge me\n", "utf8");
+    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
+    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: merge delegated work"]);
+
+    const parentHeadStillBeforeMerge = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    assert.equal(parentHeadStillBeforeMerge, parentHeadBefore);
+
+    const finishCommand = buildDelegatedFinishCommand(worktree);
+    await execFileAsync("bash", ["-lc", finishCommand], { cwd: worktree.effectiveCwd });
+
+    const parentHeadAfterMerge = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    assert.notEqual(parentHeadAfterMerge, parentHeadBefore);
+    assert.equal(await gitStdout(repoDir, ["branch", "--show-current"]), "feature/delegator-base");
+    assert.equal(await readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"), "merge me\n");
+    await assert.rejects(() => readFile(worktree.worktreePath, "utf8"));
+    const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.taskBranch}`], {
+      cwd: repoDir,
+    }).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(branchExists, false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sibling delegated workers do not see each other's uncommitted changes", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-sibling-isolation-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const workerOne = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "sibling-one",
+    });
+    const workerTwo = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "sibling-two",
+    });
+
+    await writeFile(join(workerOne.effectiveCwd, "draft.txt"), "only worker one\n", "utf8");
+
+    const parentStatus = await gitStdout(repoDir, ["status", "--porcelain"]);
+    const workerTwoStatus = await gitStdout(workerTwo.effectiveCwd, ["status", "--porcelain"]);
+
+    assert.equal(parentStatus, "");
+    assert.equal(workerTwoStatus, "");
+    await assert.rejects(() => readFile(join(repoDir, "packages", "api", "draft.txt"), "utf8"));
+    await assert.rejects(() => readFile(join(workerTwo.effectiveCwd, "draft.txt"), "utf8"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("delegated finish command refuses to merge and clean up when the parent branch becomes dirty later", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-dirty-parent-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "finish-dirty-parent",
+    });
+
+    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "needs clean parent\n", "utf8");
+    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
+    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: staged for later merge"]);
+
+    const parentHeadBefore = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
+    await writeFile(join(repoDir, "README.md"), "# now dirty\n", "utf8");
+
+    const finishCommand = buildDelegatedFinishCommand(worktree);
+    await assert.rejects(() => execFileAsync("bash", ["-lc", finishCommand], { cwd: worktree.effectiveCwd }));
+
+    assert.equal(await gitStdout(repoDir, ["rev-parse", "HEAD"]), parentHeadBefore);
+    assert.equal(await gitStdout(repoDir, ["status", "--porcelain"]), "M README.md");
+    assert.equal(await readFile(join(worktree.worktreePath, "packages", "api", "delegate.txt"), "utf8"), "needs clean parent\n");
+    const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.taskBranch}`], {
+      cwd: repoDir,
+    }).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(branchExists, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("finishWorker merges, cleans up, deletes the session file, and marks the registry record cleaned", async () => {
+  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-worker-`));
+  const repoDir = join(tempRoot, "repo");
+
+  try {
+    await initTestRepo(repoDir);
+    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
+
+    const srcDir = join(repoDir, "packages", "api");
+    await execFileAsync("mkdir", ["-p", srcDir]);
+
+    const worktree = await planDelegatedWorkspace({
+      currentCwd: repoDir,
+      requestedCwd: srcDir,
+      createWorktree: true,
+      workerSlug: "finish-worker-helper",
+    });
+
+    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "finish helper\n", "utf8");
+    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
+    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: finish via helper"]);
+
+    const sessionFile = join(tempRoot, "worker-session.jsonl");
+    await writeFile(sessionFile, "{}\n", "utf8");
+    const registryPath = join(tempRoot, "registry.json");
+    const registry = {
+      version: 1,
+      scope: { key: repoDir, label: "repo" },
+      workers: [
+        {
+          id: "worker-1",
+          name: "finish-worker-helper",
+          slug: "finish-worker-helper",
+          launchedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          childSessionFile: sessionFile,
+          requestedCwd: srcDir,
+          effectiveCwd: worktree.effectiveCwd,
+          worktreePath: worktree.worktreePath,
+          taskBranch: worktree.taskBranch,
+          baseBranch: worktree.baseBranch,
+          targetMode: "pane",
+          targetId: "%1",
+          paneId: "%1",
+        },
+      ],
+      updatedAt: new Date().toISOString(),
+    };
+
+    const result = await finishWorker(
+      { scope: registry.scope, registry, registryPath },
+      { record: registry.workers[0], live: false },
+    );
+
+    assert.match(result.actions.join(", "), /merged/);
+    assert.equal(await readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"), "finish helper\n");
+    await assert.rejects(() => readFile(sessionFile, "utf8"));
+    const loaded = await readWorkerRegistry({ registryPath, scopeKey: repoDir });
+    assert.ok(loaded.registry.workers[0].cleanedAt);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("finishWorker refuses to finish a still-live worker", async () => {
+  await assert.rejects(
+    () =>
+      finishWorker(
+        { scope: { key: "/tmp/repo", label: "repo" }, registry: { version: 1, scope: { key: "/tmp/repo", label: "repo" }, workers: [], updatedAt: new Date().toISOString() }, registryPath: "/tmp/registry.json" },
+        { record: { id: "worker-1", name: "worker-one", taskBranch: "ezdg/worker-one" }, live: true },
+      ),
+    /still live/i,
+  );
 });
