@@ -196,6 +196,38 @@ test("validateDelegateRequest preserves automerge field", () => {
 });
 
 // ---------------------------------------------------------------------------
+// --print / --no-print flag parsing
+// ---------------------------------------------------------------------------
+
+test("parseDelegateCommandInput defaults printMode to true", () => {
+  const { request } = parseDelegateCommandInput("do the thing");
+  assert.equal(request.printMode, true);
+});
+
+test("parseDelegateCommandInput parses --no-print", () => {
+  const { request, errors } = parseDelegateCommandInput("start --no-print do the thing");
+  assert.deepEqual(errors, []);
+  assert.equal(request.printMode, false);
+  assert.equal(request.task, "do the thing");
+});
+
+test("parseDelegateCommandInput parses --print explicitly", () => {
+  const { request, errors } = parseDelegateCommandInput("--print do the thing");
+  assert.deepEqual(errors, []);
+  assert.equal(request.printMode, true);
+});
+
+test("validateDelegateRequest preserves printMode field", () => {
+  const result = validateDelegateRequest({ task: "do it", printMode: false });
+  assert.equal(result.printMode, false);
+});
+
+test("validateDelegateRequest defaults printMode to true", () => {
+  const result = validateDelegateRequest({ task: "do it" });
+  assert.equal(result.printMode, true);
+});
+
+// ---------------------------------------------------------------------------
 // buildDelegatedPrompt automerge instructions
 // ---------------------------------------------------------------------------
 

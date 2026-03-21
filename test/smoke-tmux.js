@@ -230,10 +230,11 @@ try {
     previousLogCount = paneLogLines.length;
     const latestPaneLog = paneLogLines.at(-1);
     assert.equal(latestPaneLog.cwd, paneResult.cwd.effective);
-    assert.equal(latestPaneLog.argv[0], "--session");
-    assert.equal(latestPaneLog.argv[1], paneResult.session.sessionFile);
-    assert.match(latestPaneLog.argv[2], /You are a delegated worker launched via \/ezdg\./);
-    assert.match(latestPaneLog.argv[2], /smoke test pane/);
+    assert.equal(latestPaneLog.argv[0], "-p");
+    assert.equal(latestPaneLog.argv[1], "--session");
+    assert.equal(latestPaneLog.argv[2], paneResult.session.sessionFile);
+    assert.match(latestPaneLog.argv[3], /You are a delegated worker launched via \/ezdg\./);
+    assert.match(latestPaneLog.argv[3], /smoke test pane/);
 
     await cleanupTmuxTarget(paneResult.launch.mode, paneResult.launch.targetId, paneResult.launch.sessionName);
   } finally {
@@ -280,10 +281,11 @@ try {
     previousLogCount = logLines.length;
     const latest = logLines.at(-1);
     assert.equal(latest.cwd, result.cwd.effective);
-    assert.equal(latest.argv[0], "--session");
-    assert.equal(latest.argv[1], result.session.sessionFile);
-    assert.match(latest.argv[2], /You are a delegated worker launched via \/ezdg\./);
-    assert.match(latest.argv[2], new RegExp(`smoke test ${mode}`));
+    assert.equal(latest.argv[0], "-p");
+    assert.equal(latest.argv[1], "--session");
+    assert.equal(latest.argv[2], result.session.sessionFile);
+    assert.match(latest.argv[3], /You are a delegated worker launched via \/ezdg\./);
+    assert.match(latest.argv[3], new RegExp(`smoke test ${mode}`));
 
     await cleanupTmuxTarget(result.launch.mode, result.launch.targetId, result.launch.sessionName);
   }
