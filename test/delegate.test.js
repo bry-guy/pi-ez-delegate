@@ -492,6 +492,67 @@ test("sanitizeEntriesForFork handles consecutive custom entries", () => {
   assert.equal(sanitized[1].parentId, "msg1"); // skipped both c1 and c2
 });
 
+test("sanitizeEntriesForFork strips delegate_task tool calls and their results", () => {
+  const branchEntries = [
+    { type: "message", id: "msg1", parentId: null, message: { role: "user", content: "do things" } },
+    {
+      type: "message",
+      id: "assistant-delegate",
+      parentId: "msg1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "I'll delegate this." },
+          { type: "toolCall", id: "call_delegate_1", name: "delegate_task", arguments: { task: "do it" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      id: "tool-result-delegate",
+      parentId: "assistant-delegate",
+      message: { role: "toolResult", toolCallId: "call_delegate_1", content: [{ type: "text", text: "Launched worker." }] },
+    },
+    { type: "message", id: "msg2", parentId: "tool-result-delegate", message: { role: "user", content: "thanks" } },
+  ];
+
+  const sanitized = sanitizeEntriesForFork(branchEntries);
+
+  assert.equal(sanitized.length, 2);
+  assert.equal(sanitized[0].id, "msg1");
+  assert.equal(sanitized[1].id, "msg2");
+  assert.equal(sanitized[1].parentId, "msg1"); // reparented past the stripped delegate entries
+});
+
+test("sanitizeEntriesForFork keeps non-delegate tool calls intact", () => {
+  const branchEntries = [
+    { type: "message", id: "msg1", parentId: null, message: { role: "user", content: "edit a file" } },
+    {
+      type: "message",
+      id: "assistant-edit",
+      parentId: "msg1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_edit_1", name: "edit", arguments: { path: "foo.txt" } },
+        ],
+      },
+    },
+    {
+      type: "message",
+      id: "tool-result-edit",
+      parentId: "assistant-edit",
+      message: { role: "toolResult", toolCallId: "call_edit_1", content: [{ type: "text", text: "done" }] },
+    },
+  ];
+
+  const sanitized = sanitizeEntriesForFork(branchEntries);
+
+  assert.equal(sanitized.length, 3);
+  assert.equal(sanitized[1].id, "assistant-edit");
+  assert.equal(sanitized[2].id, "tool-result-edit");
+});
+
 // ---------------------------------------------------------------------------
 // Session forking
 // ---------------------------------------------------------------------------
