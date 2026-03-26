@@ -323,8 +323,10 @@ export default function delegateExtension(pi) {
   pi.on("session_start", async (_event, ctx) => {
     const header = ctx.sessionManager.getHeader();
     if (header?.parentSession) {
-      const activeTools = pi.getActiveTools().map((t) => t.name).filter((n) => n !== "delegate_task");
-      pi.setActiveTools(activeTools);
+      // Use getAllTools() — getActiveTools() may return an empty list at
+      // session_start time because tools haven't been activated yet.
+      const allToolNames = pi.getAllTools().map((t) => t.name).filter((n) => n !== "delegate_task");
+      pi.setActiveTools(allToolNames);
     }
   });
 

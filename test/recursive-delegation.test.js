@@ -354,6 +354,8 @@ test("extension source contains session_start handler that hides delegate_task f
   assert.match(source, /pi\.on\("session_start"/);
   // Verify it checks for parentSession
   assert.match(source, /header\?\.parentSession/);
+  // Verify it uses getAllTools() (not getActiveTools() which is empty at session_start)
+  assert.match(source, /pi\.getAllTools\(\)/);
   // Verify it filters out delegate_task
   assert.match(source, /filter\(\(?n\)?\s*=>\s*n\s*!==\s*"delegate_task"\)/);
   // Verify it calls setActiveTools
