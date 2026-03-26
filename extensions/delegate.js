@@ -254,6 +254,19 @@ async function getRegistryScope(ctx) {
 // ---------------------------------------------------------------------------
 
 export default function delegateExtension(pi) {
+  // --- Prevent recursive delegation ---
+  // When this session is a delegated worker (has parentSession in header),
+  // remove the delegate_task tool from the active tool set so the LLM
+  // cannot see or attempt to call it.  The runtime assertNotNestedDelegate
+  // guard remains as a defense-in-depth backstop.
+  pi.on("session_start", async (_event, ctx) => {
+    const header = ctx.sessionManager.getHeader();
+    if (header?.parentSession) {
+      const activeTools = pi.getActiveTools().map((t) => t.name).filter((n) => n !== "delegate_task");
+      pi.setActiveTools(activeTools);
+    }
+  });
+
   // --- Command ---
   pi.registerCommand(DELEGATE_COMMAND, {
     description: "Delegate work to forked worker sessions (start, list, attach, open, clean, help)",
