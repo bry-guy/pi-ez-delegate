@@ -192,6 +192,42 @@ function assertNotNestedDelegate(isDelegatedWorker, action = "launch delegates")
 }
 
 /**
+ * Compact the parent session before forking so delegates start with a
+ * summarised history and maximum available context budget.
+ *
+ * Wraps the callback-based ctx.compact() in a promise.  Resolves on success
+ * or when compaction is not needed; rejects only on genuine errors.
+ */
+function compactBeforeFork(ctx) {
+  return new Promise((resolve, reject) => {
+    try {
+      ctx.compact({
+        customInstructions: "Summarize the full conversation so far. A delegated worker will be forked from this session and needs maximum context budget.",
+        onComplete: () => resolve(true),
+        onError: (error) => reject(error),
+      });
+    } catch (error) {
+      // ctx.compact() itself may throw synchronously (e.g. nothing to compact)
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Best-effort compaction before delegation.  Never blocks the launch if
+ * compaction fails — the delegate would just start with a larger (uncompacted)
+ * history, which is still functional.
+ */
+async function tryCompactBeforeFork(ctx, notify) {
+  try {
+    const compacted = await compactBeforeFork(ctx);
+    if (compacted && notify) notify("Compacted parent session before delegation", "info");
+  } catch {
+    // Compaction is best-effort — swallow errors and proceed.
+  }
+}
+
+/**
  * Resolve parent session name and delegate index, enriching the runtime context.
  * When the parent has no name, auto-generates one and persists it via pi.appendEntry.
  */
@@ -316,6 +352,7 @@ export default function delegateExtension(pi) {
     ],
     parameters: delegateSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      await tryCompactBeforeFork(ctx);
       const rawBranchEntries = ctx.sessionManager.getBranch();
       const config = await getConfig();
       const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
@@ -370,6 +407,7 @@ export default function delegateExtension(pi) {
 
 async function handleStart(pi, ctx, parsed) {
   await ctx.waitForIdle();
+  await tryCompactBeforeFork(ctx, ctx.hasUI ? ctx.ui.notify.bind(ctx.ui) : undefined);
   const rawBranchEntries = ctx.sessionManager.getBranch();
 
   try {
