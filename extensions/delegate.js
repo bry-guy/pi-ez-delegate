@@ -199,16 +199,41 @@ function assertNotNestedDelegate(isDelegatedWorker, action = "launch delegates")
  * or when compaction is not needed; rejects only on genuine errors.
  */
 function compactBeforeFork(ctx) {
+  const COMPACT_TIMEOUT_MS = 30_000;
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(false); // timeout — proceed without compaction
+      }
+    }, COMPACT_TIMEOUT_MS);
+
     try {
       ctx.compact({
         customInstructions: "Summarize the full conversation so far. A delegated worker will be forked from this session and needs maximum context budget.",
-        onComplete: () => resolve(true),
-        onError: (error) => reject(error),
+        onComplete: () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(true);
+          }
+        },
+        onError: (error) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+          }
+        },
       });
     } catch (error) {
       // ctx.compact() itself may throw synchronously (e.g. nothing to compact)
-      resolve(false);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(false);
+      }
     }
   });
 }
@@ -352,7 +377,11 @@ export default function delegateExtension(pi) {
     ],
     parameters: delegateSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      await tryCompactBeforeFork(ctx);
+      // NOTE: ctx.compact() cannot run inside a tool execute() handler — the
+      // agent loop is blocked waiting for this tool to return, so the LLM call
+      // compact needs will never dispatch and the Promise hangs forever.
+      // Compaction is only attempted from the /ezdg command handler path which
+      // calls ctx.waitForIdle() first.
       const rawBranchEntries = ctx.sessionManager.getBranch();
       const config = await getConfig();
       const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
