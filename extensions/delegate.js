@@ -93,6 +93,7 @@ const delegateSchema = Type.Object({
   target: Type.Optional(StringEnum(DELEGATE_TARGETS)),
   name: Type.Optional(Type.String({ description: "Optional human-friendly worker name" })),
   cwd: Type.Optional(Type.String({ description: "Optional working directory for the delegated worker" })),
+  model: Type.Optional(Type.String({ description: "Optional pi model pattern/id to launch the delegated worker with." })),
   createWorktree: Type.Optional(
     Type.Boolean({ description: "Create an isolated worktree for same-repo delegation. Defaults to true." }),
   ),
@@ -127,6 +128,7 @@ function getDelegateArgumentCompletions(prefix) {
       { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
+      { value: "--model ", label: "--model", description: "Launch worker with a specific model" },
       { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
     ];
     return filterCompletionItems(current, [...subcommandItems, ...flagItems]);
@@ -138,6 +140,7 @@ function getDelegateArgumentCompletions(prefix) {
       { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
+      { value: "--model ", label: "--model", description: "Launch worker with a specific model" },
       { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
       { value: "--worktree", label: "--worktree", description: "Explicitly request a worktree" },
       { value: "--help", label: "--help", description: "Show usage" },
@@ -247,8 +250,10 @@ async function tryCompactBeforeFork(ctx, notify) {
   try {
     const compacted = await compactBeforeFork(ctx);
     if (compacted && notify) notify("Compacted parent session before delegation", "info");
+    return compacted;
   } catch {
     // Compaction is best-effort — swallow errors and proceed.
+    return false;
   }
 }
 
@@ -399,6 +404,7 @@ export default function delegateExtension(pi) {
           target: params.target || "pane",
           name: params.name,
           cwd: params.cwd,
+          model: params.model,
           createWorktree: params.createWorktree ?? true,
         },
         config,
@@ -438,12 +444,11 @@ export default function delegateExtension(pi) {
 
 async function handleStart(pi, ctx, parsed) {
   await ctx.waitForIdle();
-  await tryCompactBeforeFork(ctx, ctx.hasUI ? ctx.ui.notify.bind(ctx.ui) : undefined);
-  const rawBranchEntries = ctx.sessionManager.getBranch();
 
   try {
     assertNotNestedDelegate(Boolean(ctx.sessionManager.getHeader()?.parentSession), "launch new delegates");
     const config = await getConfig();
+    const rawBranchEntries = ctx.sessionManager.getBranch();
     const request = applyConfigDefaults(parsed.request, config);
     const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
       minPaneColumns: config.minPaneColumns,
@@ -554,6 +559,7 @@ async function handleOpen(pi, ctx, parsed) {
       env: process.env,
       piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
       target: parsed.request.target,
+      model: parsed.request.model,
       originPaneId,
     });
 
@@ -568,6 +574,7 @@ async function handleOpen(pi, ctx, parsed) {
       tmuxSessionName: relaunch.launch.sessionName,
       originPaneId: relaunch.launch.originPaneId,
       originWindowId: relaunch.launch.originWindowId,
+      model: parsed.request.model || worker.record.model,
     };
     await persistReopenToRegistry(updatedRecord, scope);
 

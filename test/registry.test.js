@@ -29,6 +29,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
     launchedAt: "2026-03-16T12:00:00.000Z",
     request: {
       task: "Implement worker registry tracking and cleanup safety",
+      model: "anthropic/claude-sonnet-4-5",
     },
     parent: {
       sessionFile: "/tmp/parent.jsonl",
@@ -74,6 +75,7 @@ test("createWorkerRegistryRecord normalizes a delegate launch result", () => {
   assert.equal(record.originWindowId, "@2");
   assert.equal(record.taskBranch, "ezdg/registry-worker");
   assert.equal(record.baseBranch, "main");
+  assert.equal(record.model, "anthropic/claude-sonnet-4-5");
 });
 
 test("writeWorkerRegistry and readWorkerRegistry round-trip records", async () => {

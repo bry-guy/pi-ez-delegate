@@ -12,6 +12,7 @@ import {
   buildDelegateState,
   buildDelegatedFinishCommand,
   buildDelegatedPrompt,
+  buildTmuxCommand,
   createForkedSessionFile,
   deriveWorkerName,
   getActiveDelegateState,
@@ -56,6 +57,26 @@ test("parseDelegateCommandInput explicit start subcommand", () => {
   assert.deepEqual(errors, []);
   assert.equal(request.target, "session");
   assert.equal(request.task, "do something");
+});
+
+test("parseDelegateCommandInput parses --model for start", () => {
+  const { request, errors } = parseDelegateCommandInput("start --model sonnet do something");
+  assert.deepEqual(errors, []);
+  assert.equal(request.model, "sonnet");
+});
+
+test("parseDelegateCommandInput parses --model for open", () => {
+  const { subcommand, request, errors } = parseDelegateCommandInput("open my-worker --model gpt-4o");
+  assert.equal(subcommand, "open");
+  assert.deepEqual(errors, []);
+  assert.equal(request.nameOrId, "my-worker");
+  assert.equal(request.model, "gpt-4o");
+});
+
+test("parseDelegateCommandInput reports missing --model value", () => {
+  const { errors } = parseDelegateCommandInput("start --model --target pane do it");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /missing value for --model/i);
 });
 
 test("parseDelegateCommandInput list subcommand", () => {
@@ -227,6 +248,23 @@ test("validateDelegateRequest preserves printMode field", () => {
 test("validateDelegateRequest defaults printMode to true", () => {
   const result = validateDelegateRequest({ task: "do it" });
   assert.equal(result.printMode, true);
+});
+
+test("validateDelegateRequest preserves model field", () => {
+  const result = validateDelegateRequest({ task: "do it", model: "sonnet" });
+  assert.equal(result.model, "sonnet");
+});
+
+test("buildTmuxCommand includes model when provided", () => {
+  const command = buildTmuxCommand({
+    piCommand: "pi",
+    sessionFile: "/tmp/session.jsonl",
+    prompt: "do the work",
+    printMode: true,
+    model: "anthropic/claude-sonnet-4-5",
+  });
+  assert.match(command, /--model 'anthropic\/claude-sonnet-4-5'/);
+  assert.match(command, /--session '\/tmp\/session\.jsonl'/);
 });
 
 test("delegateTask rejects nested delegates", async () => {

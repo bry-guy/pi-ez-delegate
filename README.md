@@ -30,7 +30,7 @@ Implemented:
 - **Single-rail pane layout:** configurable min columns/rows for auto layout decisions
 
 Not implemented yet:
-- `--model` / `--pick-model` flags
+- `--pick-model` interactive selector
 - zellij adapter
 - completion signaling back from workers to parents
 
@@ -45,7 +45,7 @@ Not implemented yet:
 #### Start a worker (default)
 
 ```text
-/ezdg [start] [--target pane|window|session] [--name worker-name] [--cwd path] [--no-worktree] <task>
+/ezdg [start] [--target pane|window|session] [--name worker-name] [--cwd path] [--model pattern] [--no-worktree] <task>
 ```
 
 The `start` keyword is optional — `/ezdg <task>` works as an implicit start.
@@ -69,7 +69,7 @@ Switches tmux focus to the worker's pane/window/session. Fails with a suggestion
 #### Open a worker
 
 ```text
-/ezdg open <name-or-id> [--target pane|window|session]
+/ezdg open <name-or-id> [--target pane|window|session] [--model pattern]
 ```
 
 If the worker is live, attaches to it. If dead, relaunches from its saved session file and worktree.
@@ -117,6 +117,7 @@ Defaults:
 - `target = pane`
 - `createWorktree = true` for same-repo delegation
 - `cwd = current session cwd`
+- `model = current pi default/model selection` unless overridden with `--model`
 
 ## Tool
 

@@ -26,13 +26,16 @@ Use the `delegate_task` tool from `pi-ez-delegate` when a request can be split i
 4. Prefer `createWorktree: true` for same-repo coding work.
 5. Include the concrete goal, relevant files, constraints, and expected output in the delegated task prompt.
 6. Keep integration work local until delegated contracts are stable.
+7. **Compact before delegating.** When the conversation has significant context usage, run `/compact` before calling `delegate_task`. Delegated workers inherit the current conversation as their starting context — compacting first maximizes the useful context budget available to each worker. This is especially important for long sessions or when launching multiple delegates.
+8. Use `--model <pattern>` to override the model for a specific delegate when appropriate (e.g. using a cheaper model for simple tasks, or a stronger model for complex ones).
 
 ## Suggested workflow
 1. Read the user request and identify independent workstreams.
 2. Keep one stream local if integration or coordination is still needed.
-3. Call `delegate_task` once per worker-worthy stream.
-4. Give each delegated prompt a crisp scope, such as one subsystem or one repo.
-5. If tmux is unavailable, continue locally and explain why delegation could not launch.
+3. If the session has substantial context usage, compact first to give delegates maximum context budget.
+4. Call `delegate_task` once per worker-worthy stream.
+5. Give each delegated prompt a crisp scope, such as one subsystem or one repo.
+6. If tmux is unavailable, continue locally and explain why delegation could not launch.
 
 ## Prompt shape for delegated workers
 Each delegated task should include:
@@ -46,10 +49,10 @@ Each delegated task should include:
 
 The user-facing command family is `/ezdg <subcommand>`:
 
-- `/ezdg [start] <task>` — launch a new worker (start is implicit if omitted)
+- `/ezdg [start] [--model pattern] <task>` — launch a new worker (start is implicit if omitted)
 - `/ezdg list` — list workers for the current repo
 - `/ezdg attach <name-or-id>` — switch to a live worker
-- `/ezdg open <name-or-id>` — attach if live, relaunch if dead
+- `/ezdg open <name-or-id> [--model pattern]` — attach if live, relaunch if dead
 - `/ezdg clean [--yes]` — clean safe dead workers (preview without --yes)
 - `/ezdg help [subcommand]` — show help
 
@@ -61,3 +64,4 @@ The LLM-facing tool is `delegate_task`.
 - Dead workers can be reopened from their saved session files.
 - Do not suggest the old `/delegate` name.
 - Use delegation for independence, not for tightly-coupled parallel edits.
+- Context management is orthogonal to delegation. The extension does not enforce compaction — it is the model's responsibility to compact when appropriate before delegating. The skill guidance above covers when and why.

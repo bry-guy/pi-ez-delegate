@@ -83,6 +83,8 @@ test("normalizeDelegateConfig allows minPaneRows=0 to disable row limit", () => 
   assert.equal(result.minPaneRows, 0);
 });
 
+
+
 test("loadDelegateConfig overrides merge with file config then options.overrides", async () => {
   const tempAgentDir = await mkdtemp(join(os.tmpdir(), "ezdg-config-"));
   const configPath = getDefaultConfigPath(tempAgentDir);
