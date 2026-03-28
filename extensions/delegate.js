@@ -125,7 +125,7 @@ function getDelegateArgumentCompletions(prefix) {
       { value: "help", label: "help", description: "Show help" },
     ];
     const flagItems = [
-      { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
+      { value: "--target ", label: "--target", description: "Launch worker in a pane or in the shared delegates window" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
       { value: "--model ", label: "--model", description: "Launch worker with a specific model" },
@@ -137,7 +137,7 @@ function getDelegateArgumentCompletions(prefix) {
   // After first token: flag completions for start/implicit start
   if (!current || current.startsWith("--")) {
     return filterCompletionItems(current, [
-      { value: "--target ", label: "--target", description: "Launch worker in a pane, window, or session" },
+      { value: "--target ", label: "--target", description: "Launch worker in a pane or in the shared delegates window" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
       { value: "--model ", label: "--model", description: "Launch worker with a specific model" },

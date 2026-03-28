@@ -18,11 +18,12 @@ Use the `delegate_task` tool from `pi-ez-delegate` when a request can be split i
 - Workstreams are highly sequential and depend on unsettled interfaces
 - The user wants all work to stay inside the current session
 - tmux is unavailable for the current pi session
+- You are already a delegated worker; delegated workers must not launch more delegates
 
 ## Rules
 1. Delegate only self-contained work with clear ownership boundaries.
 2. Prefer a small number of meaningful delegated workers over many tiny workers.
-3. Default to `target: "pane"` unless the user explicitly asks for window or session behavior.
+3. Default to `target: "pane"` unless the user explicitly asks for the shared delegates window behavior (`target: "window"`).
 4. Prefer `createWorktree: true` for same-repo coding work.
 5. Include the concrete goal, relevant files, constraints, and expected output in the delegated task prompt.
 6. Keep integration work local until delegated contracts are stable.
@@ -49,7 +50,7 @@ Each delegated task should include:
 
 The user-facing command family is `/ezdg <subcommand>`:
 
-- `/ezdg [start] [--model pattern] <task>` — launch a new worker (start is implicit if omitted)
+- `/ezdg [start] [--model pattern] [--target pane|window] <task>` — launch a new worker (start is implicit if omitted)
 - `/ezdg list` — list workers for the current repo
 - `/ezdg attach <name-or-id>` — switch to a live worker
 - `/ezdg open <name-or-id> [--model pattern]` — attach if live, relaunch if dead

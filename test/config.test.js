@@ -121,11 +121,11 @@ test("loadDelegateConfig with only overrides and no file still works", async () 
   try {
     const result = await loadDelegateConfig({
       agentDir: tempAgentDir,
-      overrides: { defaultTarget: "session" },
+      overrides: { defaultTarget: "window" },
     });
 
     assert.equal(result.exists, false);
-    assert.equal(result.config.defaultTarget, "session");
+    assert.equal(result.config.defaultTarget, "window");
     assert.equal(result.config.multiplexer, "tmux");
   } finally {
     await rm(tempAgentDir, { recursive: true, force: true });

@@ -39,14 +39,12 @@ async function tmuxHas(targetType, targetId) {
   const args =
     targetType === "pane"
       ? ["list-panes", "-a", "-F", "#{pane_id}"]
-      : targetType === "window"
-        ? ["list-windows", "-a", "-F", "#{window_id}"]
-        : ["list-sessions", "-F", "#{session_id}"];
+      : ["list-windows", "-a", "-F", "#{window_id}"];
   const { stdout } = await run("tmux", args, { env: process.env });
   return stdout.split(/\r?\n/).includes(targetId);
 }
 
-async function cleanupTmuxTarget(mode, targetId, sessionName) {
+async function cleanupTmuxTarget(mode, targetId) {
   try {
     if (mode === "pane") {
       if (await tmuxHas("pane", targetId)) await run("tmux", ["kill-pane", "-t", targetId], { env: process.env });
@@ -54,13 +52,7 @@ async function cleanupTmuxTarget(mode, targetId, sessionName) {
     }
     if (mode === "window") {
       if (await tmuxHas("window", targetId)) await run("tmux", ["kill-window", "-t", targetId], { env: process.env });
-      return;
     }
-    if (sessionName) {
-      await run("tmux", ["kill-session", "-t", sessionName], { env: process.env }).catch(() => undefined);
-      return;
-    }
-    if (await tmuxHas("session", targetId)) await run("tmux", ["kill-session", "-t", targetId], { env: process.env });
   } catch {
     // best-effort cleanup only
   }
@@ -164,6 +156,59 @@ try {
 
   let previousLogCount = 0;
 
+  const reboundResult = await delegateTask(
+    {
+      task: "smoke test stale origin rebind",
+      target: "pane",
+      name: "smoke-rebind",
+      createWorktree: true,
+    },
+    {
+      parentCwd: repoDir,
+      parentSessionFile: join(tempRoot, "parent.jsonl"),
+      headerVersion: 3,
+      branchEntries: [
+        ...branchEntries,
+        {
+          type: "custom",
+          id: "stale-origin",
+          parentId: "22222222",
+          timestamp: new Date().toISOString(),
+          customType: DELEGATE_STATE_ENTRY_TYPE,
+          data: {
+            active: true,
+            workerId: "stale-origin-worker",
+            targetMode: "pane",
+            originPaneId: "%999999",
+            originWindowId: "@999999",
+          },
+        },
+      ],
+      getLabel: () => undefined,
+      env: process.env,
+      piCommand: fakePiPath,
+    },
+  );
+
+  assert.equal(reboundResult.launch.mode, "pane");
+  assert.notEqual(reboundResult.launch.originPaneId, "%999999");
+  await cleanupTmuxTarget(reboundResult.launch.mode, reboundResult.launch.targetId);
+
+  const reboundLogLines = await waitFor(async () => {
+    try {
+      const raw = await readFile(logPath, "utf8");
+      const entries = raw
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return entries.length > previousLogCount ? entries : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  previousLogCount = reboundLogLines.length;
+
   const anchor = await createAnchorWindow();
   try {
     const paneResult = await delegateTask(
@@ -236,12 +281,12 @@ try {
     assert.match(latestPaneLog.argv[3], /You are a delegated worker launched via \/ezdg\./);
     assert.match(latestPaneLog.argv[3], /smoke test pane/);
 
-    await cleanupTmuxTarget(paneResult.launch.mode, paneResult.launch.targetId, paneResult.launch.sessionName);
+    await cleanupTmuxTarget(paneResult.launch.mode, paneResult.launch.targetId);
   } finally {
     await cleanupTmuxTarget("window", anchor.windowId);
   }
 
-  for (const mode of ["window", "session"]) {
+  for (const mode of ["window"]) {
     const result = await delegateTask(
       {
         task: `smoke test ${mode}`,
@@ -287,7 +332,7 @@ try {
     assert.match(latest.argv[3], /You are a delegated worker launched via \/ezdg\./);
     assert.match(latest.argv[3], new RegExp(`smoke test ${mode}`));
 
-    await cleanupTmuxTarget(result.launch.mode, result.launch.targetId, result.launch.sessionName);
+    await cleanupTmuxTarget(result.launch.mode, result.launch.targetId);
   }
 
   console.log("tmux smoke test passed");

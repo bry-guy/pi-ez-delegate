@@ -52,10 +52,10 @@ test("parseDelegateCommandInput implicit start parses flags and task text", () =
 });
 
 test("parseDelegateCommandInput explicit start subcommand", () => {
-  const { subcommand, request, errors } = parseDelegateCommandInput("start --target session do something");
+  const { subcommand, request, errors } = parseDelegateCommandInput("start --target window do something");
   assert.equal(subcommand, "start");
   assert.deepEqual(errors, []);
-  assert.equal(request.target, "session");
+  assert.equal(request.target, "window");
   assert.equal(request.task, "do something");
 });
 
@@ -295,7 +295,7 @@ test("delegateTask rejects nested delegates", async () => {
 // buildDelegatedPrompt automerge instructions
 // ---------------------------------------------------------------------------
 
-test("buildDelegatedPrompt includes merge instructions when automerge is true and worktree exists", () => {
+test("buildDelegatedPrompt includes finish guidance when worktree exists", () => {
   const prompt = buildDelegatedPrompt({
     task: "implement feature",
     workerName: "test-worker",
@@ -312,15 +312,11 @@ test("buildDelegatedPrompt includes merge instructions when automerge is true an
     automerge: true,
   });
   assert.match(prompt, /when your task is complete/i);
-  assert.match(prompt, /cd \/tmp\/repo/);
-  assert.match(prompt, /git diff --quiet/);
-  assert.match(prompt, /git diff --cached --quiet/);
-  assert.match(prompt, /git merge ezdg\/test-worker/);
-  assert.match(prompt, /&& git worktree remove --force \/tmp\/worktrees\/test-worker/);
-  assert.match(prompt, /&& git branch -d ezdg\/test-worker/);
+  assert.match(prompt, /Do NOT attempt to merge, remove the worktree, or delete the branch yourself/i);
+  assert.match(prompt, /The delegator will handle merging via \/ezdg finish <worker-name>/);
 });
 
-test("buildDelegatedPrompt quotes paths with spaces in automerge command", () => {
+test("buildDelegatedPrompt includes parent/worktree paths when they contain spaces", () => {
   const prompt = buildDelegatedPrompt({
     task: "implement feature",
     workerName: "test-worker",
@@ -336,8 +332,8 @@ test("buildDelegatedPrompt quotes paths with spaces in automerge command", () =>
     },
     automerge: true,
   });
-  assert.match(prompt, /cd '\/tmp\/my repo'/);
-  assert.match(prompt, /worktree remove --force '\/tmp\/my worktrees\/test-worker'/);
+  assert.match(prompt, /Parent session cwd: \/tmp\/my repo/);
+  assert.match(prompt, /Isolated git worktree: \/tmp\/my worktrees\/test-worker/);
 });
 
 test("buildDelegatedPrompt omits merge instructions when automerge is false", () => {
@@ -975,7 +971,7 @@ test("planDelegatedWorkspace rejects launching when the parent checkout has a re
   }
 });
 
-test("buildDelegatedPrompt completion command merges back into the delegator's current branch checkout", () => {
+test("buildDelegatedPrompt completion guidance points workers back to /ezdg finish", () => {
   const prompt = buildDelegatedPrompt({
     task: "implement feature",
     workerName: "test-worker",
@@ -992,12 +988,9 @@ test("buildDelegatedPrompt completion command merges back into the delegator's c
     automerge: true,
   });
 
-  assert.match(prompt, /cd \/tmp\/repo/);
-  assert.match(prompt, /git diff --quiet/);
-  assert.match(prompt, /git diff --cached --quiet/);
-  assert.match(prompt, /git merge ezdg\/test-worker/);
-  assert.match(prompt, /git worktree remove --force \/tmp\/\.pi-worktrees\/repo\/test-worker/);
-  assert.match(prompt, /git branch -d ezdg\/test-worker/);
+  assert.match(prompt, /Parent session cwd: \/tmp\/repo/);
+  assert.match(prompt, /Requested cwd before worktree translation: \/tmp\/repo\/packages\/api/);
+  assert.match(prompt, /The delegator will handle merging via \/ezdg finish <worker-name>/);
 });
 
 test("worker commit lands on the worker branch and not the parent branch", async () => {

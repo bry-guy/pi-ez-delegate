@@ -9,8 +9,8 @@ The core flow is:
 - fork the current conversation context into a worker session file
 - default to an isolated same-repo git worktree when appropriate
 - launch the worker in tmux
-  - default: detached pane split
-  - optional: detached window or detached session
+  - default: detached pane split in the current/origin window
+  - optional: place delegates in a shared detached `delegates` window
 - return a switch hint so you can jump to that worker later
 
 ## Status
@@ -18,7 +18,7 @@ The core flow is:
 Implemented:
 - **Command:** `/ezdg <subcommand> [options]`
 - **Tool:** `delegate_task`
-- **tmux adapter:** pane, window, and session launch targets
+- **tmux adapter:** pane target plus a shared delegates-window target
 - **Session forking:** worker gets a forked session file with the current conversation branch
 - **Same-repo worktrees:** enabled by default unless `--no-worktree` is used
 - **Worker registry:** persistent per-repo registry for cross-session worker discovery
@@ -45,7 +45,7 @@ Not implemented yet:
 #### Start a worker (default)
 
 ```text
-/ezdg [start] [--target pane|window|session] [--name worker-name] [--cwd path] [--model pattern] [--no-worktree] <task>
+/ezdg [start] [--target pane|window] [--name worker-name] [--cwd path] [--model pattern] [--no-worktree] <task>
 ```
 
 The `start` keyword is optional — `/ezdg <task>` works as an implicit start.
@@ -56,7 +56,7 @@ The `start` keyword is optional — `/ezdg <task>` works as an implicit start.
 /ezdg list
 ```
 
-Shows all workers for the current repo grouped by status: live, needs attention, safe to clean, stale.
+Shows all workers for the current repo grouped by status: open, needs attention, safe to clean, stale.
 
 #### Attach to a live worker
 
@@ -64,12 +64,12 @@ Shows all workers for the current repo grouped by status: live, needs attention,
 /ezdg attach <name-or-id>
 ```
 
-Switches tmux focus to the worker's pane/window/session. Fails with a suggestion to use `open` if the worker is dead.
+Switches tmux focus to the worker's pane or delegates window. Fails with a suggestion to use `open` if the worker is dead.
 
 #### Open a worker
 
 ```text
-/ezdg open <name-or-id> [--target pane|window|session] [--model pattern]
+/ezdg open <name-or-id> [--target pane|window] [--model pattern]
 ```
 
 If the worker is live, attaches to it. If dead, relaunches from its saved session file and worktree.
@@ -132,9 +132,8 @@ Use it for independent workstreams with clear ownership boundaries.
 v1 requires running pi **inside tmux**.
 
 Launch modes:
-- `pane` → `tmux split-window -d ...`
-- `window` → `tmux new-window -d ...`
-- `session` → `tmux new-session -d ...`
+- `pane` → `tmux split-window -d ...` in the current/origin window
+- `window` → create or reuse one shared tmux window named `delegates`, then place each delegate there as a pane
 
 Each launch returns:
 - worker name
@@ -143,6 +142,8 @@ Each launch returns:
 - worktree details when one was created
 - tmux target identifier
 - a switch hint such as `tmux select-pane -t %17`
+
+If a previously remembered origin pane is stale after reopening the parent session, `pi-ez-delegate` will try to rebind pane launches to the current live `TMUX_PANE` automatically.
 
 ## Worker lifecycle
 
@@ -153,7 +154,7 @@ Workers are tracked in a persistent per-repo registry file at:
 ```
 
 Worker statuses:
-- **Live** — tmux target still exists
+- **Open** — tmux target still exists
 - **Needs Attention** — dead, but has dirty/ahead/conflicted worktree
 - **Safe to Clean** — dead, worktree clean or missing
 - **Stale** — dead, no session file or workspace remains

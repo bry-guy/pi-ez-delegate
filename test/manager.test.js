@@ -56,11 +56,10 @@ test("getWorkerLivenessProbePlan uses pane only for pane workers", () => {
   ]);
 });
 
-test("getWorkerLivenessProbePlan uses mode fallback for legacy workers", () => {
+test("getWorkerLivenessProbePlan uses pane/window fallback for legacy workers", () => {
   assert.deepEqual(getWorkerLivenessProbePlan({ paneId: "%9", windowId: "@2", sessionId: "$1" }), [
     { mode: "pane", targetId: "%9" },
     { mode: "window", targetId: "@2" },
-    { mode: "session", targetId: "$1" },
   ]);
 });
 
@@ -71,10 +70,10 @@ test("getWorkerTmuxTarget returns authoritative window target", () => {
   );
 });
 
-test("getWorkerTmuxTarget prefers persisted tmux session name", () => {
+test("getWorkerTmuxTarget falls back to pane metadata for unsupported legacy target modes", () => {
   assert.deepEqual(
-    getWorkerTmuxTarget({ targetMode: "session", sessionId: "$3", slug: "short-name", tmuxSessionName: "actual-session-name" }),
-    { targetMode: "session", targetId: "$3", sessionName: "actual-session-name" },
+    getWorkerTmuxTarget({ targetMode: "session", paneId: "%3", sessionId: "$3", slug: "short-name", tmuxSessionName: "actual-session-name" }),
+    { targetMode: "pane", targetId: "%3", sessionName: "actual-session-name" },
   );
 });
 
@@ -133,7 +132,7 @@ test("formatWorkerList groups by status", () => {
     { record: { name: "dead-one", slug: "dead-one", targetMode: "pane", taskBranch: "ezdg/dead-one" }, status: WORKER_STATUS.DEAD_NEEDS_ATTENTION, gitSummary: "dirty" },
   ];
   const output = formatWorkerList(workers);
-  assert.match(output, /Live/);
+  assert.match(output, /Open/);
   assert.match(output, /Needs Attention/);
   assert.match(output, /dead-one/);
   assert.match(output, /\/ezdg open dead-one/);
