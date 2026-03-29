@@ -1,6 +1,6 @@
 # pi-ez-delegate bug report: pane workers can be misclassified as live after exit because liveness falls back to parent window/session
 
-Status: open bug report / investigation note.
+Status: done
 
 ## Summary
 
@@ -119,9 +119,7 @@ For a worker launched with `targetMode: "window"`:
 
 - window liveness should be the primary source of truth
 
-For a worker launched with `targetMode: "session"`:
-
-- session liveness should be the primary source of truth
+Note: tmux `session` delegate targets have since been removed from the product, so this bug is now resolved by authoritative pane/window probing only.
 
 ## Actual behavior
 

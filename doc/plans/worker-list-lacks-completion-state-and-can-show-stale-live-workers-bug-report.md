@@ -1,10 +1,12 @@
 # pi-ez-delegate bug report: `/ezdg list` conflates tmux liveness with task completion and can still show stale workers as Live
 
-Status: open bug report / investigation note.
+Status: partially done
 
 ## Summary
 
 `/ezdg list` currently answers a narrow question: does the recorded tmux target still look alive?
+
+Update: this has been improved, but not fully solved. Pane-worker liveness fallback bugs were fixed, and the user-facing `Live` label was changed to `Open` with git-summary context such as `Open (clean)`. However, the system still does not distinguish truly active work from merely open/idle workers, nor does it detect integrated/done state.
 
 That is not the same as the user question they usually mean to ask:
 
@@ -163,6 +165,8 @@ Possible user-facing statuses:
 - `Stale`
 
 ## Minimum acceptable improvement
+
+Status: mostly achieved.
 
 Even without full lifecycle tracking, `/ezdg list` should stop using only the word Live when the record is also:
 
