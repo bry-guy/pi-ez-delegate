@@ -1,5 +1,6 @@
 [tools]
-node = "22"
+node = "24"
+"npm:@earendil-works/gondolin" = "0.12.0"
 
 [tasks.check]
 description = "Syntax-check the extension, core module, and test files"
