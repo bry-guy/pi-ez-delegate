@@ -315,6 +315,27 @@ async function getRegistryScope(ctx) {
   return { key: gitContext.mainCheckoutPath, label: basename(gitContext.mainCheckoutPath) };
 }
 
+function stripLeadingMention(text) {
+  let rest = String(text ?? "").trimStart();
+  while (true) {
+    const next = rest.replace(/^(?:<@!?\d+>|<@&\d+>|@[\w.-]+)\s*/u, "");
+    if (next === rest) return rest;
+    rest = next.trimStart();
+  }
+}
+
+function matchSlashCommand(text, aliases) {
+  const stripped = stripLeadingMention(text);
+  for (const alias of aliases) {
+    const command = `/${alias}`;
+    if (stripped === command) return { name: alias, args: "" };
+    if (stripped.startsWith(`${command} `) || stripped.startsWith(`${command}\n`) || stripped.startsWith(`${command}\t`)) {
+      return { name: alias, args: stripped.slice(command.length).trim() };
+    }
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -335,38 +356,57 @@ export default function delegateExtension(pi) {
     }
   });
 
+  async function handleDelegateCommand(args, ctx) {
+    const parsed = parseDelegateCommandInput(args);
+
+    if (parsed.errors.length > 0) {
+      const content = [`/${DELEGATE_COMMAND} could not parse the request.`, "", ...parsed.errors, "", formatDelegateHelp()].join("\n");
+      if (ctx.hasUI) ctx.ui.notify(parsed.errors[0], "error");
+      sendDelegateMessage(pi, content, { status: "error", errors: parsed.errors });
+      return;
+    }
+
+    switch (parsed.subcommand) {
+      case "help":
+        sendDelegateMessage(pi, formatDelegateHelp(parsed.request.topic), { status: "help" });
+        return;
+      case "start":
+        return handleStart(pi, ctx, parsed);
+      case "list":
+        return handleList(pi, ctx);
+      case "attach":
+        return handleAttach(pi, ctx, parsed);
+      case "open":
+        return handleOpen(pi, ctx, parsed);
+      case "finish":
+        return handleFinish(pi, ctx, parsed);
+      case "clean":
+        return handleClean(pi, ctx, parsed);
+    }
+  }
+
   // --- Command ---
   pi.registerCommand(DELEGATE_COMMAND, {
     description: "Delegate work to forked worker sessions (start, list, attach, open, clean, help)",
     getArgumentCompletions: getDelegateArgumentCompletions,
-    handler: async (args, ctx) => {
-      const parsed = parseDelegateCommandInput(args);
+    handler: handleDelegateCommand,
+  });
 
-      if (parsed.errors.length > 0) {
-        const content = [`/${DELEGATE_COMMAND} could not parse the request.`, "", ...parsed.errors, "", formatDelegateHelp()].join("\n");
-        if (ctx.hasUI) ctx.ui.notify(parsed.errors[0], "error");
-        sendDelegateMessage(pi, content, { status: "error", errors: parsed.errors });
-        return;
-      }
-
-      switch (parsed.subcommand) {
-        case "help":
-          sendDelegateMessage(pi, formatDelegateHelp(parsed.request.topic), { status: "help" });
-          return;
-        case "start":
-          return handleStart(pi, ctx, parsed);
-        case "list":
-          return handleList(pi, ctx);
-        case "attach":
-          return handleAttach(pi, ctx, parsed);
-        case "open":
-          return handleOpen(pi, ctx, parsed);
-        case "finish":
-          return handleFinish(pi, ctx, parsed);
-        case "clean":
-          return handleClean(pi, ctx, parsed);
-      }
-    },
+  pi.on("input", async (event, ctx) => {
+    const match = matchSlashCommand(event.text, [DELEGATE_COMMAND]);
+    if (!match) return { action: "continue" };
+    const messages = [];
+    const originalSendMessage = pi.sendMessage;
+    pi.sendMessage = (message) => messages.push(typeof message === "string" ? message : message?.content ?? JSON.stringify(message));
+    try {
+      await handleDelegateCommand(match.args, ctx);
+      const text = messages.join("\n\n") || `/${DELEGATE_COMMAND} completed.`;
+      return { action: "transform", text: `The remote /${DELEGATE_COMMAND} command completed. Reply to the user with this result exactly:\n\n${text}` };
+    } catch (error) {
+      return { action: "transform", text: `The remote /${DELEGATE_COMMAND} command failed. Reply to the user with this error:\n\n${error instanceof Error ? error.message : String(error)}` };
+    } finally {
+      pi.sendMessage = originalSendMessage;
+    }
   });
 
   // --- Tool ---
