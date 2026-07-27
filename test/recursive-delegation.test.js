@@ -24,7 +24,7 @@ test("delegateTask throws when isDelegatedWorker is true", async () => {
     await assert.rejects(
       () =>
         delegateTask(
-          { task: "do something", target: "pane" },
+          { task: "do something", target: "session" },
           {
             branchEntries: [],
             parentCwd: tempRoot,
@@ -54,7 +54,7 @@ test("delegateTask does NOT throw when isDelegatedWorker is false", async () => 
     await assert.rejects(
       () =>
         delegateTask(
-          { task: "do something", target: "pane" },
+          { task: "do something", target: "session" },
           {
             branchEntries: [],
             parentCwd: tempRoot,
@@ -105,7 +105,7 @@ test("buildDelegatedPrompt anti-delegation instruction is present with worktree"
       created: true,
       mainCheckoutPath: "/tmp/repo",
       worktreePath: "/tmp/worktrees/wt-worker",
-      taskBranch: "ezdg/wt-worker",
+      taskBranch: "delegate/wt-worker",
       baseBranch: "main",
     },
   });
@@ -296,7 +296,7 @@ test("createForkedSessionFile sets parentSession in the session header", async (
       getLabel: () => undefined,
       targetCwd,
       sessionName: "test-worker",
-      delegateState: buildDelegateState({ workerId: "w-1", targetMode: "pane" }),
+      delegateState: buildDelegateState({ workerId: "w-1", targetMode: "session" }),
     });
 
     const { readFile } = await import("node:fs/promises");
@@ -388,7 +388,7 @@ test("all recursion guards fire for a simulated delegation cascade", async () =>
     await assert.rejects(
       () =>
         delegateTask(
-          { task: "sub-delegate this", target: "pane" },
+          { task: "sub-delegate this", target: "session" },
           {
             branchEntries: [],
             parentCwd: tempRoot,

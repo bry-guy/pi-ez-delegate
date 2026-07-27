@@ -50,30 +50,16 @@ test("classifyWorker returns dead-safe-to-clean for session-only workers", () =>
   assert.equal(classifyWorker(false, true, false, undefined), WORKER_STATUS.DEAD_SAFE_TO_CLEAN);
 });
 
-test("getWorkerLivenessProbePlan uses pane only for pane workers", () => {
-  assert.deepEqual(getWorkerLivenessProbePlan({ targetMode: "pane", paneId: "%9", windowId: "@2", sessionId: "$1" }), [
-    { mode: "pane", targetId: "%9" },
+test("getWorkerLivenessProbePlan uses tmux session identity only", () => {
+  assert.deepEqual(getWorkerLivenessProbePlan({ targetMode: "session", targetId: "worker-session" }), [
+    { mode: "session", targetId: "worker-session" },
   ]);
 });
 
-test("getWorkerLivenessProbePlan uses pane/window fallback for legacy workers", () => {
-  assert.deepEqual(getWorkerLivenessProbePlan({ paneId: "%9", windowId: "@2", sessionId: "$1" }), [
-    { mode: "pane", targetId: "%9" },
-    { mode: "window", targetId: "@2" },
-  ]);
-});
-
-test("getWorkerTmuxTarget returns authoritative window target", () => {
+test("getWorkerTmuxTarget returns authoritative session target", () => {
   assert.deepEqual(
-    getWorkerTmuxTarget({ targetMode: "window", paneId: "%9", windowId: "@2", slug: "my-worker" }),
-    { targetMode: "window", targetId: "@2", sessionName: "my-worker" },
-  );
-});
-
-test("getWorkerTmuxTarget falls back to pane metadata for unsupported legacy target modes", () => {
-  assert.deepEqual(
-    getWorkerTmuxTarget({ targetMode: "session", paneId: "%3", sessionId: "$3", slug: "short-name", tmuxSessionName: "actual-session-name" }),
-    { targetMode: "pane", targetId: "%3", sessionName: "actual-session-name" },
+    getWorkerTmuxTarget({ targetMode: "session", targetId: "worker-session", tmuxSessionName: "worker-session" }),
+    { targetMode: "session", targetId: "worker-session", sessionName: "worker-session" },
   );
 });
 
@@ -128,19 +114,19 @@ test("formatWorkerList returns empty message for no workers", () => {
 
 test("formatWorkerList groups by status", () => {
   const workers = [
-    { record: { name: "live-one", targetMode: "pane" }, status: WORKER_STATUS.LIVE, gitSummary: "clean" },
-    { record: { name: "dead-one", slug: "dead-one", targetMode: "pane", taskBranch: "ezdg/dead-one" }, status: WORKER_STATUS.DEAD_NEEDS_ATTENTION, gitSummary: "dirty" },
+    { record: { name: "live-one", targetMode: "session" }, status: WORKER_STATUS.LIVE, gitSummary: "clean" },
+    { record: { name: "dead-one", slug: "dead-one", targetMode: "session", taskBranch: "delegate/dead-one" }, status: WORKER_STATUS.DEAD_NEEDS_ATTENTION, gitSummary: "dirty" },
   ];
   const output = formatWorkerList(workers);
   assert.match(output, /Open/);
   assert.match(output, /Needs Attention/);
   assert.match(output, /dead-one/);
-  assert.match(output, /\/ezdg open dead-one/);
+  assert.match(output, /\/delegate open dead-one/);
 });
 
 test("formatCleanPreview shows safe and attention workers", () => {
   const workers = [
-    { record: { name: "safe-one", id: "s1", taskBranch: "ezdg/safe" }, status: WORKER_STATUS.DEAD_SAFE_TO_CLEAN, sessionExists: true, workspaceExists: true, gitSummary: "clean" },
+    { record: { name: "safe-one", id: "s1", taskBranch: "delegate/safe" }, status: WORKER_STATUS.DEAD_SAFE_TO_CLEAN, sessionExists: true, workspaceExists: true, gitSummary: "clean" },
     { record: { name: "attn-one", id: "a1" }, status: WORKER_STATUS.DEAD_NEEDS_ATTENTION, gitSummary: "dirty" },
   ];
   const output = formatCleanPreview(workers);

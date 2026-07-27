@@ -5,29 +5,25 @@
 The core flow is:
 
 - keep working in the current pi session
-- run `/ezdg <task>` or let the agent call `delegate_task`
+- run `/delegate <task>` or let the agent call `delegate_task` / `delegate_task_worktree`
 - fork the current conversation context into a worker session file
-- default to an isolated same-repo git worktree when appropriate
-- launch the worker in tmux
-  - default: detached pane split in the current/origin window
-  - optional: place delegates in a shared detached `delegates` window
+- use an isolated same-repo git worktree only when explicitly requested
+- launch the worker as a detached, headless tmux session
 - return a switch hint so you can jump to that worker later
 
 ## Status
 
 Implemented:
-- **Command:** `/ezdg <subcommand> [options]`
-- **Tool:** `delegate_task`
-- **tmux adapter:** pane target plus a shared delegates-window target
+- **Command:** `/delegate <subcommand> [options]`
+- **Tools:** `delegate_task`, `delegate_task_worktree`, `delegate_status`, `delegate_result`
+- **tmux adapter:** one detached headless session per worker
 - **Session forking:** worker gets a forked session file with the current conversation branch
-- **Same-repo worktrees:** enabled by default unless `--no-worktree` is used
+- **Same-repo worktrees:** explicit via `/delegate worktree` or `delegate_task_worktree`
 - **Worker registry:** persistent per-repo registry for cross-session worker discovery
-- **Worker lifecycle:** list, attach, open, finish, and clean subcommands
+- **Worker lifecycle:** status, result, attach, open, and clean subcommands
 - **Live/dead detection:** tmux target inspection for liveness checks
 - **Safe cleanup:** conservative dead-worker cleanup with dry-run preview
-- **Safe finish:** guarded merge-back, worktree removal, branch deletion, and session cleanup for completed workers
 - **Replay safety:** parentId chain preservation when forking sessions
-- **Single-rail pane layout:** configurable min columns/rows for auto layout decisions
 
 Not implemented yet:
 - `--pick-model` interactive selector
@@ -37,7 +33,7 @@ Not implemented yet:
 ## Command
 
 ```text
-/ezdg <subcommand> [options]
+/delegate <subcommand> [options]
 ```
 
 ### Subcommands
@@ -45,15 +41,15 @@ Not implemented yet:
 #### Start a worker (default)
 
 ```text
-/ezdg [start] [--target pane|window] [--name worker-name] [--cwd path] [--model pattern] [--no-worktree] <task>
+/delegate [start] [--name worker-name] [--cwd path] [--model pattern] [--effort none|low|medium|high|xhigh] <task>
 ```
 
-The `start` keyword is optional — `/ezdg <task>` works as an implicit start.
+The `start` keyword is optional — `/delegate <task>` works as an implicit start. Use `/delegate worktree <task>` for isolated code changes.
 
 #### List workers
 
 ```text
-/ezdg list
+/delegate status
 ```
 
 Shows all workers for the current repo grouped by status: open, needs attention, safe to clean, stale.
@@ -61,89 +57,93 @@ Shows all workers for the current repo grouped by status: open, needs attention,
 #### Attach to a live worker
 
 ```text
-/ezdg attach <name-or-id>
+/delegate attach <name-or-id>
 ```
 
-Switches tmux focus to the worker's pane or delegates window. Fails with a suggestion to use `open` if the worker is dead.
+Switches to the worker's tmux session when possible, or prints an attach command. Fails with a suggestion to use `open` if the worker is dead.
 
 #### Open a worker
 
 ```text
-/ezdg open <name-or-id> [--target pane|window] [--model pattern]
+/delegate open <name-or-id> [--model pattern] [--effort none|low|medium|high|xhigh]
 ```
 
 If the worker is live, attaches to it. If dead, relaunches from its saved session file and worktree.
 
-#### Finish a completed worker
+#### Read a worker result
 
 ```text
-/ezdg finish <name-or-id>
+/delegate result <name-or-id>
 ```
 
-For a completed dead worker, merges its delegated branch back into the delegator branch, removes the worker worktree, deletes the worker branch, deletes the saved worker session file, and marks the registry record cleaned.
-
-Finish refuses to run while the worker is still live, or when the delegator branch is dirty or in the middle of a merge/rebase.
+Reads the structured JSON result written by a completed delegate. Results live under `~/.pi/agent/state/pi-ez-delegate/results/`.
 
 #### Clean dead workers
 
 ```text
-/ezdg clean [--yes]
+/delegate clean [--yes]
 ```
 
-Without `--yes`, shows a preview of what would be cleaned. With `--yes`, deletes session files, removes worktrees, and deletes branches for workers that are safe to clean.
+Without `--yes`, shows a preview of what would be cleaned. With `--yes`, deletes session files and removes leftover worktrees; branches are preserved for delegator review for workers that are safe to clean.
 
 Workers with dirty worktrees, branches ahead of base, or in-progress rebases/merges are skipped with actionable recommendations.
 
 #### Help
 
 ```text
-/ezdg help [subcommand]
+/delegate help [subcommand]
 ```
 
 ### Examples
 
 ```text
-/ezdg implement the GH Actions publish pipeline
-/ezdg start --target window wire up castaway-web service auth middleware
-/ezdg --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
-/ezdg list
-/ezdg open my-worker
-/ezdg attach my-worker
-/ezdg finish my-worker
-/ezdg clean --yes
+/delegate investigate the GH Actions publish pipeline --model claude-opus-4-7 --effort high
+/delegate worktree wire up castaway-web service auth middleware --model gpt-codex-5.5 --effort xhigh
+/delegate --cwd ~/dev/infra bootstrap Argo CD and Tailscale access
+/delegate status
+/delegate open my-worker
+/delegate attach my-worker
+/delegate result my-worker
+/delegate clean --yes
 ```
 
 Defaults:
-- `target = pane`
-- `createWorktree = true` for same-repo delegation
+- workers run as detached headless tmux sessions
+- `createWorktree = false` for normal delegation; use `/delegate worktree` / `delegate_task_worktree` for isolated code changes
 - `cwd = current session cwd`
-- `model = current pi default/model selection` unless overridden with `--model`
+- `model = current pi default/model selection` unless overridden with `--model` for that delegate process only
+- `effort = current/default effort` unless overridden with `--effort` for that delegate process only
 
 ## Tool
 
 The extension also exposes an LLM-facing tool:
 
-- `delegate_task`
+- `delegate_task` — non-worktree delegation
+- `delegate_task_worktree` — isolated code-change delegation
+- `delegate_status` — list/inspect delegates
+- `delegate_result` — read a delegate result JSON
 
 Use it for independent workstreams with clear ownership boundaries.
 
 ## tmux behavior
 
-v1 requires running pi **inside tmux**.
+Delegates run as detached, headless tmux sessions. The parent pi session does not need to be inside tmux.
 
-Launch modes:
-- `pane` → `tmux split-window -d ...` in the current/origin window
-- `window` → create or reuse one shared tmux window named `delegates`, then place each delegate there as a pane
+Each worker launch runs roughly:
+
+```text
+tmux new-session -d -s <worker-session> -c <cwd> <pi worker command>
+```
 
 Each launch returns:
 - worker name
 - worker session file path
 - effective cwd
 - worktree details when one was created
-- tmux target identifier
-- a switch hint such as `tmux select-pane -t %17`
+- tmux session name
+- an attach hint such as `tmux attach-session -t <worker-session>`
 
-If a previously remembered origin pane is stale after reopening the parent session, `pi-ez-delegate` will try to rebind pane launches to the current live `TMUX_PANE` automatically.
+There is intentionally no pane splitting, shared delegates window, origin pane tracking, or pane layout management. Liveness is just `tmux has-session -t <worker-session>`.
 
 ## Worker lifecycle
 
@@ -161,7 +161,7 @@ Worker statuses:
 
 ## Worktree behavior
 
-When the delegated cwd is inside the **same git repo** as the parent session, `pi-ez-delegate` creates a fresh worktree by default.
+When using `/delegate worktree` or `delegate_task_worktree`, and the delegated cwd is inside the **same git repo** as the parent session, `pi-ez-delegate` creates a fresh worktree and branch before launch.
 
 That keeps delegated workers from colliding in the same checkout.
 
@@ -178,7 +178,7 @@ Tradeoffs of the current behavior:
 
 If the delegated cwd is in a different repo or not in git, worktree creation is skipped cleanly.
 
-If you want to avoid same-repo worktree rooting entirely for a worker, use `--no-worktree`.
+Normal `/delegate <task>` and `delegate_task` do not create worktrees by default. Worktree delegates should commit their changes, remove only their worktree, and leave the branch for the delegator to review/merge however they choose.
 
 ## Session behavior
 
@@ -197,7 +197,7 @@ For extension authors composing on top of `pi-ez-delegate` or `pi-ez-worktree`:
 The worker session gets its own display name in the form:
 
 ```text
-ezdg:<worker-name>
+delegate:<worker-name>
 ```
 
 ## Configuration
@@ -206,11 +206,7 @@ Optional config file at `~/.pi/agent/pi-ez-delegate.json`:
 
 ```json
 {
-  "multiplexer": "tmux",
-  "defaultTarget": "pane",
-  "defaultPaneSplit": "auto",
-  "minPaneColumns": 180,
-  "minPaneRows": 28
+  "multiplexer": "tmux"
 }
 ```
 

@@ -4,6 +4,7 @@ import { Type } from "@sinclair/typebox";
 import { basename } from "node:path";
 import {
   DELEGATE_COMMAND,
+  DELEGATE_EFFORTS,
   DELEGATE_MESSAGE_TYPE,
   DELEGATE_REGISTRY_ENTRY_TYPE,
   DELEGATE_STATE_ENTRY_TYPE,
@@ -26,14 +27,13 @@ import {
   findWorkerByNameOrId,
   reopenWorker,
   cleanSafeWorkers,
-  finishWorker,
   persistLaunchToRegistry,
   persistReopenToRegistry,
   formatWorkerList,
   formatCleanPreview,
   formatCleanResult,
-  formatFinishResult,
   getWorkerTmuxTarget,
+  readDelegateResultFile,
 } from "../lib/manager.js";
 import { attachToTmuxTarget } from "../lib/tmux.js";
 
@@ -51,41 +51,8 @@ async function getConfig() {
   return configCache;
 }
 
-/**
- * Apply config-driven defaults to a start request.
- *
- * The parser in lib/delegate.js hardcodes target="pane" when the user does not
- * pass --target.  We detect this by checking whether the parsed target equals
- * the parser default ("pane") — if it does and the config specifies a different
- * defaultTarget, we override it.  When the user explicitly passes --target the
- * parsed value will already be what they asked for and either matches the
- * config default (no-op) or differs from "pane" (not overridden).
- *
- * The same strategy applies to split when the other worker wires --split into
- * the parser.
- */
-function applyConfigDefaults(request, config) {
-  const patched = { ...request };
-
-  // Override target only when it is still the parser hardcoded default
-  if (patched.target === "pane" && config.defaultTarget !== "pane") {
-    patched.target = config.defaultTarget;
-  }
-
-  // Respect configured default pane split when request did not specify one.
-  if ((patched.split === undefined || patched.split === "auto") && config.defaultPaneSplit && config.defaultPaneSplit !== "auto") {
-    patched.split = config.defaultPaneSplit;
-  }
-
-  return patched;
-}
-
-function applyRuntimeConfig(runtime, config) {
-  return {
-    ...runtime,
-    minPaneColumns: config.minPaneColumns,
-    minPaneRows: config.minPaneRows,
-  };
+function applyConfigDefaults(request, _config) {
+  return { ...request, target: "session" };
 }
 
 const delegateSchema = Type.Object({
@@ -94,8 +61,9 @@ const delegateSchema = Type.Object({
   name: Type.Optional(Type.String({ description: "Optional human-friendly worker name" })),
   cwd: Type.Optional(Type.String({ description: "Optional working directory for the delegated worker" })),
   model: Type.Optional(Type.String({ description: "Optional pi model pattern/id to launch the delegated worker with." })),
+  effort: Type.Optional(StringEnum(DELEGATE_EFFORTS)),
   createWorktree: Type.Optional(
-    Type.Boolean({ description: "Create an isolated worktree for same-repo delegation. Defaults to true." }),
+    Type.Boolean({ description: "Create an isolated worktree for same-repo delegation. Defaults to false; prefer delegate_task_worktree for code changes." }),
   ),
 });
 
@@ -117,18 +85,19 @@ function getDelegateArgumentCompletions(prefix) {
   if (tokens.length <= 1) {
     const subcommandItems = [
       { value: "start ", label: "start", description: "Launch a new worker" },
-      { value: "list", label: "list", description: "List workers" },
+      { value: "status", label: "status", description: "List workers" },
+      { value: "worktree ", label: "worktree", description: "Launch an isolated code-change worker" },
+      { value: "result ", label: "result", description: "Read a worker result" },
       { value: "attach ", label: "attach", description: "Attach to a live worker" },
       { value: "open ", label: "open", description: "Open a worker" },
-      { value: "finish ", label: "finish", description: "Merge and clean up a completed dead worker" },
       { value: "clean ", label: "clean", description: "Clean dead workers" },
       { value: "help", label: "help", description: "Show help" },
     ];
     const flagItems = [
-      { value: "--target ", label: "--target", description: "Launch worker in a pane or in the shared delegates window" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
       { value: "--model ", label: "--model", description: "Launch worker with a specific model" },
+      { value: "--effort ", label: "--effort", description: "Set reasoning effort for this worker only" },
       { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
     ];
     return filterCompletionItems(current, [...subcommandItems, ...flagItems]);
@@ -137,10 +106,10 @@ function getDelegateArgumentCompletions(prefix) {
   // After first token: flag completions for start/implicit start
   if (!current || current.startsWith("--")) {
     return filterCompletionItems(current, [
-      { value: "--target ", label: "--target", description: "Launch worker in a pane or in the shared delegates window" },
       { value: "--name ", label: "--name", description: "Set a worker name" },
       { value: "--cwd ", label: "--cwd", description: "Use a different working directory" },
       { value: "--model ", label: "--model", description: "Launch worker with a specific model" },
+      { value: "--effort ", label: "--effort", description: "Set reasoning effort for this worker only" },
       { value: "--no-worktree", label: "--no-worktree", description: "Skip worktree creation" },
       { value: "--worktree", label: "--worktree", description: "Explicitly request a worktree" },
       { value: "--help", label: "--help", description: "Show usage" },
@@ -179,8 +148,6 @@ function buildRuntimeContext(ctx, rawBranchEntries, options = {}) {
     getLabel: (entryId) => ctx.sessionManager.getLabel(entryId),
     env: process.env,
     piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
-    minPaneColumns: options.minPaneColumns,
-    minPaneRows: options.minPaneRows,
     isDelegatedWorker: Boolean(ctx.sessionManager.getHeader()?.parentSession),
     // Naming fields — populated by enrichRuntimeWithNaming()
     parentSessionName: undefined,
@@ -311,8 +278,8 @@ async function getRegistryScope(ctx) {
   const rawBranchEntries = ctx.sessionManager.getBranch();
   const parentCwd = getParentEffectiveCwd(ctx.cwd, rawBranchEntries);
   const gitContext = await getGitContext(parentCwd);
-  if (!gitContext) return undefined;
-  return { key: gitContext.mainCheckoutPath, label: basename(gitContext.mainCheckoutPath) };
+  if (gitContext) return { key: gitContext.mainCheckoutPath, label: basename(gitContext.mainCheckoutPath) };
+  return { key: parentCwd, label: basename(parentCwd) || "delegate" };
 }
 
 function stripLeadingMention(text) {
@@ -351,7 +318,7 @@ export default function delegateExtension(pi) {
     if (header?.parentSession) {
       // Use getAllTools() — getActiveTools() may return an empty list at
       // session_start time because tools haven't been activated yet.
-      const allToolNames = pi.getAllTools().map((t) => t.name).filter((n) => n !== "delegate_task");
+      const allToolNames = pi.getAllTools().map((t) => t.name).filter((n) => n !== "delegate_task" && n !== "delegate_task_worktree");
       pi.setActiveTools(allToolNames);
     }
   });
@@ -371,26 +338,29 @@ export default function delegateExtension(pi) {
         sendDelegateMessage(pi, formatDelegateHelp(parsed.request.topic), { status: "help" });
         return;
       case "start":
+      case "worktree":
         return handleStart(pi, ctx, parsed);
       case "list":
-        return handleList(pi, ctx);
+      case "status":
+        return handleStatus(pi, ctx, parsed);
+      case "result":
+        return handleResult(pi, ctx, parsed);
       case "attach":
         return handleAttach(pi, ctx, parsed);
       case "open":
         return handleOpen(pi, ctx, parsed);
-      case "finish":
-        return handleFinish(pi, ctx, parsed);
       case "clean":
         return handleClean(pi, ctx, parsed);
     }
   }
 
   // --- Command ---
-  pi.registerCommand(DELEGATE_COMMAND, {
-    description: "Delegate work to forked worker sessions (start, list, attach, open, clean, help)",
+  const commandSpec = {
+    description: "Delegate work to forked worker sessions (worktree, status, result, attach, open, clean, help)",
     getArgumentCompletions: getDelegateArgumentCompletions,
     handler: handleDelegateCommand,
-  });
+  };
+  pi.registerCommand(DELEGATE_COMMAND, commandSpec);
 
   pi.on("input", async (event, ctx) => {
     const match = matchSlashCommand(event.text, [DELEGATE_COMMAND]);
@@ -413,13 +383,13 @@ export default function delegateExtension(pi) {
   pi.registerTool({
     name: "delegate_task",
     label: "Delegate Task",
-    description: "Fork the current session, optionally create a same-repo worktree, and launch a delegated worker in tmux.",
+    description: "Fork the current session and launch an ephemeral headless delegate for non-code or non-isolated work.",
     promptSnippet: "Delegate an independent task into a forked tmux worker session.",
     promptGuidelines: [
       "Use this tool only for independent workstreams with clear ownership boundaries.",
       "Delegated workers must never spawn more delegates; only the parent session may launch workers.",
-      "Default to target pane unless the user explicitly asks for a different tmux target.",
-      "Prefer createWorktree=true for same-repo coding work so delegated workers do not collide in the same checkout.",
+      "Delegates run as detached headless tmux sessions; do not ask for pane/window targets.",
+      "For software changes that need isolation, prefer delegate_task_worktree instead of guessing.",
       `The user-facing slash command is /${DELEGATE_COMMAND}.`,
     ],
     parameters: delegateSchema,
@@ -427,25 +397,24 @@ export default function delegateExtension(pi) {
       // NOTE: ctx.compact() cannot run inside a tool execute() handler — the
       // agent loop is blocked waiting for this tool to return, so the LLM call
       // compact needs will never dispatch and the Promise hangs forever.
-      // Compaction is only attempted from the /ezdg command handler path which
+      // Compaction is only attempted from the /delegate command handler path which
       // calls ctx.waitForIdle() first.
       const rawBranchEntries = ctx.sessionManager.getBranch();
       const config = await getConfig();
       const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
         excludeTrailingDelegateToolCall: true,
-        minPaneColumns: config.minPaneColumns,
-        minPaneRows: config.minPaneRows,
       });
       assertNotNestedDelegate(runtime.isDelegatedWorker, "launch new delegates");
       await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
       const request = applyConfigDefaults(
         {
           task: params.task,
-          target: params.target || "pane",
+          target: "session",
           name: params.name,
           cwd: params.cwd,
           model: params.model,
-          createWorktree: params.createWorktree ?? true,
+          effort: params.effort,
+          createWorktree: params.createWorktree ?? false,
         },
         config,
       );
@@ -461,6 +430,71 @@ export default function delegateExtension(pi) {
         content: [{ type: "text", text: formatDelegateLaunchResult(result) }],
         details: result,
       };
+    },
+  });
+
+
+  pi.registerTool({
+    name: "delegate_task_worktree",
+    label: "Delegate Task in Worktree",
+    description: "Fork the current session, create an isolated same-repo worktree/branch, and launch an ephemeral headless delegate for code changes.",
+    promptSnippet: "Delegate an isolated code-change task into a forked headless worker session.",
+    promptGuidelines: [
+      "Use for software changes where work should be isolated in its own branch/worktree.",
+      "The delegate should commit changes, remove only its worktree when done, write its result JSON, and exit.",
+      "The delegator decides whether/how to review or merge the branch.",
+    ],
+    parameters: delegateSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const rawBranchEntries = ctx.sessionManager.getBranch();
+      const config = await getConfig();
+      const runtime = buildRuntimeContext(ctx, rawBranchEntries, { excludeTrailingDelegateToolCall: true });
+      assertNotNestedDelegate(runtime.isDelegatedWorker, "launch new delegates");
+      await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
+      const request = applyConfigDefaults({
+        task: params.task,
+        target: "session",
+        name: params.name,
+        cwd: params.cwd,
+        model: params.model,
+        effort: params.effort,
+        createWorktree: true,
+      }, config);
+      const result = await delegateTask(request, runtime);
+      appendDelegateEntries(pi, result);
+      const scope = await getRegistryScope(ctx);
+      if (scope) await persistLaunchToRegistry(result, scope);
+      return { content: [{ type: "text", text: formatDelegateLaunchResult(result) }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_status",
+    label: "Delegate Status",
+    description: "List delegates for the current scope or inspect one delegate by name/id.",
+    parameters: Type.Object({ worker: Type.Optional(Type.String()) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const scope = await getRegistryScope(ctx);
+      const result = await listWorkersForScope(scope, { env: process.env });
+      const workers = params.worker ? result.workers.filter((w) => findWorkerByNameOrId(result.workers, params.worker)?.record.id === w.record.id) : result.workers;
+      return { content: [{ type: "text", text: formatWorkerList(workers) }], details: { registryPath: result.registryPath, workers } };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_result",
+    label: "Delegate Result",
+    description: "Read the structured JSON result written by a delegate.",
+    parameters: Type.Object({ worker: Type.String() }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const scope = await getRegistryScope(ctx);
+      const result = await listWorkersForScope(scope, { env: process.env });
+      const worker = findWorkerByNameOrId(result.workers, params.worker);
+      if (!worker) throw new Error(`No worker found matching "${params.worker}".`);
+      if (!worker.record.resultFile) throw new Error(`Worker "${worker.record.name}" has no result file recorded.`);
+      const parsed = await readDelegateResultFile(worker.record.resultFile);
+      if (!parsed) throw new Error(`No result written yet: ${worker.record.resultFile}`);
+      return { content: [{ type: "text", text: JSON.stringify(parsed, null, 2) }], details: { resultFile: worker.record.resultFile, result: parsed, worker } };
     },
   });
 
@@ -491,8 +525,6 @@ async function handleStart(pi, ctx, parsed) {
     const rawBranchEntries = ctx.sessionManager.getBranch();
     const request = applyConfigDefaults(parsed.request, config);
     const runtime = buildRuntimeContext(ctx, rawBranchEntries, {
-      minPaneColumns: config.minPaneColumns,
-      minPaneRows: config.minPaneRows,
     });
     await enrichRuntimeWithNaming(pi, ctx, runtime, rawBranchEntries);
     const result = await delegateTask(request, runtime);
@@ -502,7 +534,7 @@ async function handleStart(pi, ctx, parsed) {
     const scope = await getRegistryScope(ctx);
     if (scope) await persistLaunchToRegistry(result, scope);
 
-    if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} in tmux ${result.launch.mode}`, "success");
+    if (ctx.hasUI) ctx.ui.notify(`Launched ${result.worker.name} as headless tmux session`, "success");
     sendDelegateMessage(pi, formatDelegateLaunchResult(result), result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -511,16 +543,42 @@ async function handleStart(pi, ctx, parsed) {
   }
 }
 
-async function handleList(pi, ctx) {
+async function handleStatus(pi, ctx, parsed = { request: {} }) {
   try {
     const scope = await getRegistryScope(ctx);
-    if (!scope) {
-      sendDelegateMessage(pi, "Not inside a git repository. Worker list requires a repo context.", { status: "error" });
+    const result = await listWorkersForScope(scope, { env: process.env });
+    const worker = parsed.request?.nameOrId ? findWorkerByNameOrId(result.workers, parsed.request.nameOrId) : undefined;
+    if (parsed.request?.nameOrId && !worker) {
+      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
       return;
     }
+    const workers = worker ? [worker] : result.workers;
+    sendDelegateMessage(pi, formatWorkerList(workers), { status: "success", workerCount: workers.length, registryPath: result.registryPath });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendDelegateMessage(pi, message, { status: "error" });
+  }
+}
 
+async function handleResult(pi, ctx, parsed) {
+  try {
+    const scope = await getRegistryScope(ctx);
     const result = await listWorkersForScope(scope, { env: process.env });
-    sendDelegateMessage(pi, formatWorkerList(result.workers), { status: "success", workerCount: result.workers.length });
+    const worker = findWorkerByNameOrId(result.workers, parsed.request.nameOrId);
+    if (!worker) {
+      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
+      return;
+    }
+    if (!worker.record.resultFile) {
+      sendDelegateMessage(pi, `Worker "${worker.record.name}" has no result file recorded.`, { status: "error" });
+      return;
+    }
+    const parsedResult = await readDelegateResultFile(worker.record.resultFile);
+    if (!parsedResult) {
+      sendDelegateMessage(pi, `No result written yet: ${worker.record.resultFile}`, { status: "pending" });
+      return;
+    }
+    sendDelegateMessage(pi, JSON.stringify(parsedResult, null, 2), { status: "success", resultFile: worker.record.resultFile, result: parsedResult });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendDelegateMessage(pi, message, { status: "error" });
@@ -547,7 +605,7 @@ async function handleAttach(pi, ctx, parsed) {
       const slug = worker.record.slug || worker.record.id;
       sendDelegateMessage(
         pi,
-        `Worker "${worker.record.name}" is not live. Use /ezdg open ${slug} to relaunch.`,
+        `Worker "${worker.record.name}" is not live. Use /delegate open ${slug} to relaunch.`,
         { status: "error" },
       );
       return;
@@ -592,15 +650,10 @@ async function handleOpen(pi, ctx, parsed) {
     // Dead — relaunch
     const rawBranchEntries = ctx.sessionManager.getBranch();
     assertNotNestedDelegate(Boolean(ctx.sessionManager.getHeader()?.parentSession), "relaunch workers");
-    const delegateState = getActiveDelegateState(rawBranchEntries);
-    const originPaneId = delegateState?.originPaneId || process.env.TMUX_PANE;
-
     const relaunch = await reopenWorker(worker.record, {
       env: process.env,
       piCommand: process.env.PI_EZ_DELEGATE_PI_COMMAND || "pi",
-      target: parsed.request.target,
       model: parsed.request.model,
-      originPaneId,
     });
 
     // Update registry
@@ -608,52 +661,18 @@ async function handleOpen(pi, ctx, parsed) {
       ...worker.record,
       targetMode: relaunch.launch.mode,
       targetId: relaunch.launch.targetId,
-      paneId: relaunch.launch.paneId,
-      windowId: relaunch.launch.windowId,
       sessionId: relaunch.launch.sessionId,
       tmuxSessionName: relaunch.launch.sessionName,
-      originPaneId: relaunch.launch.originPaneId,
-      originWindowId: relaunch.launch.originWindowId,
       model: parsed.request.model || worker.record.model,
     };
     await persistReopenToRegistry(updatedRecord, scope);
 
-    if (ctx.hasUI) ctx.ui.notify(`Reopened ${worker.record.name} in ${relaunch.launch.mode}`, "success");
+    if (ctx.hasUI) ctx.ui.notify(`Reopened ${worker.record.name} as headless tmux session`, "success");
     sendDelegateMessage(
       pi,
-      `Reopened "${worker.record.name}" in ${relaunch.launch.mode} ${relaunch.launch.targetId}.\nSwitch: ${relaunch.launch.attachHint}`,
+      `Reopened "${worker.record.name}" in headless tmux session ${relaunch.launch.targetId}.\nSwitch: ${relaunch.launch.attachHint}`,
       { status: "success" },
     );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (ctx.hasUI) ctx.ui.notify(message, "error");
-    sendDelegateMessage(pi, message, { status: "error" });
-  }
-}
-
-async function handleFinish(pi, ctx, parsed) {
-  try {
-    const scope = await getRegistryScope(ctx);
-    if (!scope) {
-      sendDelegateMessage(pi, "Not inside a git repository.", { status: "error" });
-      return;
-    }
-
-    const result = await listWorkersForScope(scope, { env: process.env });
-    const worker = findWorkerByNameOrId(result.workers, parsed.request.nameOrId);
-
-    if (!worker) {
-      sendDelegateMessage(pi, `No worker found matching "${parsed.request.nameOrId}".`, { status: "error" });
-      return;
-    }
-
-    const finishResult = await finishWorker(
-      { scope, registry: result.registry, registryPath: result.registryPath },
-      worker,
-    );
-
-    if (ctx.hasUI) ctx.ui.notify(`Finished ${worker.record.name}`, "success");
-    sendDelegateMessage(pi, formatFinishResult(finishResult), { status: "success" });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (ctx.hasUI) ctx.ui.notify(message, "error");

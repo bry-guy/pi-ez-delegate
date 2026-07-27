@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,6 @@ import {
   DELEGATE_COMMAND,
   DELEGATE_STATE_ENTRY_TYPE,
   buildDelegateState,
-  buildDelegatedFinishCommand,
   buildDelegatedPrompt,
   buildTmuxCommand,
   createForkedSessionFile,
@@ -28,10 +27,10 @@ import {
   verifyDelegatedWorkspace,
   delegateTask,
 } from "../lib/delegate.js";
-import { finishWorker } from "../lib/manager.js";
 import { readWorkerRegistry } from "../lib/registry.js";
 
 const execFileAsync = promisify(execFile);
+const HAS_GIT = (() => { try { execFileSync("git", ["--version"], { stdio: "ignore" }); return true; } catch { return false; } })();
 
 // ---------------------------------------------------------------------------
 // Subcommand parsing
@@ -39,12 +38,12 @@ const execFileAsync = promisify(execFile);
 
 test("parseDelegateCommandInput implicit start parses flags and task text", () => {
   const { subcommand, request, errors } = parseDelegateCommandInput(
-    '--target window --name worker-one --cwd ~/dev/infra --no-worktree ship the deploy pipeline',
+    '--name worker-one --cwd ~/dev/infra --no-worktree ship the deploy pipeline',
   );
 
   assert.equal(subcommand, "start");
   assert.deepEqual(errors, []);
-  assert.equal(request.target, "window");
+  assert.equal(request.target, "session");
   assert.equal(request.name, "worker-one");
   assert.equal(request.cwd, "~/dev/infra");
   assert.equal(request.createWorktree, false);
@@ -52,10 +51,10 @@ test("parseDelegateCommandInput implicit start parses flags and task text", () =
 });
 
 test("parseDelegateCommandInput explicit start subcommand", () => {
-  const { subcommand, request, errors } = parseDelegateCommandInput("start --target window do something");
+  const { subcommand, request, errors } = parseDelegateCommandInput("start do something");
   assert.equal(subcommand, "start");
   assert.deepEqual(errors, []);
-  assert.equal(request.target, "window");
+  assert.equal(request.target, "session");
   assert.equal(request.task, "do something");
 });
 
@@ -63,6 +62,26 @@ test("parseDelegateCommandInput parses --model for start", () => {
   const { request, errors } = parseDelegateCommandInput("start --model sonnet do something");
   assert.deepEqual(errors, []);
   assert.equal(request.model, "sonnet");
+});
+
+test("parseDelegateCommandInput parses flags after task text", () => {
+  const before = parseDelegateCommandInput("--model claude-opus-4-7 --effort high investigate foo");
+  const after = parseDelegateCommandInput("investigate foo --model claude-opus-4-7 --effort high");
+  assert.deepEqual(before.errors, []);
+  assert.deepEqual(after.errors, []);
+  assert.equal(before.request.task, "investigate foo");
+  assert.equal(after.request.task, "investigate foo");
+  assert.equal(before.request.model, after.request.model);
+  assert.equal(before.request.effort, after.request.effort);
+});
+
+test("parseDelegateCommandInput worktree subcommand enables worktree mode", () => {
+  const { subcommand, request, errors } = parseDelegateCommandInput("worktree implement auth --effort xhigh");
+  assert.equal(subcommand, "worktree");
+  assert.deepEqual(errors, []);
+  assert.equal(request.createWorktree, true);
+  assert.equal(request.effort, "xhigh");
+  assert.equal(request.task, "implement auth");
 });
 
 test("parseDelegateCommandInput parses --model for open", () => {
@@ -74,7 +93,7 @@ test("parseDelegateCommandInput parses --model for open", () => {
 });
 
 test("parseDelegateCommandInput reports missing --model value", () => {
-  const { errors } = parseDelegateCommandInput("start --model --target pane do it");
+  const { errors } = parseDelegateCommandInput("start --model");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /missing value for --model/i);
 });
@@ -99,26 +118,18 @@ test("parseDelegateCommandInput attach without name errors", () => {
   assert.match(errors[0], /missing/i);
 });
 
-test("parseDelegateCommandInput open subcommand with target", () => {
-  const { subcommand, request, errors } = parseDelegateCommandInput("open my-worker --target window");
+test("parseDelegateCommandInput open subcommand", () => {
+  const { subcommand, request, errors } = parseDelegateCommandInput("open my-worker");
   assert.equal(subcommand, "open");
   assert.equal(request.nameOrId, "my-worker");
-  assert.equal(request.target, "window");
   assert.deepEqual(errors, []);
 });
 
-test("parseDelegateCommandInput finish subcommand", () => {
-  const { subcommand, request, errors } = parseDelegateCommandInput("finish my-worker");
-  assert.equal(subcommand, "finish");
-  assert.equal(request.nameOrId, "my-worker");
-  assert.deepEqual(errors, []);
-});
-
-test("parseDelegateCommandInput finish without name errors", () => {
-  const { subcommand, errors } = parseDelegateCommandInput("finish");
-  assert.equal(subcommand, "finish");
+test("parseDelegateCommandInput finish is removed", () => {
+  const { subcommand, errors } = parseDelegateCommandInput("finish my-worker");
+  assert.equal(subcommand, "help");
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /missing/i);
+  assert.match(errors[0], /finish was removed/i);
 });
 
 test("parseDelegateCommandInput clean subcommand", () => {
@@ -148,53 +159,6 @@ test("parseDelegateCommandInput empty input returns help", () => {
 test("parseDelegateCommandInput reports unknown flags", () => {
   const { errors } = parseDelegateCommandInput("--wat do the thing");
   assert.deepEqual(errors, ["Unknown flag: --wat"]);
-});
-
-// ---------------------------------------------------------------------------
-// --split flag parsing
-// ---------------------------------------------------------------------------
-
-test("parseDelegateCommandInput parses --split flag", () => {
-  const { subcommand, request, errors } = parseDelegateCommandInput("start --split vertical do the thing");
-  assert.equal(subcommand, "start");
-  assert.deepEqual(errors, []);
-  assert.equal(request.split, "vertical");
-  assert.equal(request.task, "do the thing");
-});
-
-test("parseDelegateCommandInput parses --split=horizontal", () => {
-  const { request, errors } = parseDelegateCommandInput("--split=horizontal do it");
-  assert.deepEqual(errors, []);
-  assert.equal(request.split, "horizontal");
-});
-
-test("parseDelegateCommandInput defaults split to auto", () => {
-  const { request } = parseDelegateCommandInput("do the thing");
-  assert.equal(request.split, "auto");
-});
-
-test("parseDelegateCommandInput reports invalid --split value", () => {
-  const { errors } = parseDelegateCommandInput("--split diagonal do it");
-  assert.equal(errors.length, 1);
-  assert.match(errors[0], /split mode/i);
-});
-
-test("parseDelegateCommandInput reports missing --split value", () => {
-  const { errors } = parseDelegateCommandInput("--split --target pane do it");
-  assert.equal(errors.length, 1);
-  assert.match(errors[0], /missing value for --split/i);
-});
-
-test("validateDelegateRequest rejects --split with non-pane target", () => {
-  assert.throws(
-    () => validateDelegateRequest({ task: "do it", target: "window", split: "vertical" }),
-    /--split is only supported with --target pane/,
-  );
-});
-
-test("validateDelegateRequest accepts --split with pane target", () => {
-  const result = validateDelegateRequest({ task: "do it", target: "pane", split: "horizontal" });
-  assert.equal(result.split, "horizontal");
 });
 
 // ---------------------------------------------------------------------------
@@ -273,7 +237,7 @@ test("delegateTask rejects nested delegates", async () => {
     await assert.rejects(
       () =>
         delegateTask(
-          { task: "spawn another worker", target: "pane" },
+          { task: "spawn another worker" },
           {
             branchEntries: [],
             parentCwd: tempRoot,
@@ -306,14 +270,14 @@ test("buildDelegatedPrompt includes finish guidance when worktree exists", () =>
       created: true,
       mainCheckoutPath: "/tmp/repo",
       worktreePath: "/tmp/worktrees/test-worker",
-      taskBranch: "ezdg/test-worker",
+      taskBranch: "delegate/test-worker",
       baseBranch: "main",
     },
     automerge: true,
   });
   assert.match(prompt, /when your task is complete/i);
-  assert.match(prompt, /Do NOT attempt to merge, remove the worktree, or delete the branch yourself/i);
-  assert.match(prompt, /The delegator will handle merging via \/ezdg finish <worker-name>/);
+  assert.match(prompt, /Do NOT merge into the delegator branch or delete the branch/i);
+  assert.match(prompt, /leaving the branch and commits intact for delegator review/);
 });
 
 test("buildDelegatedPrompt includes parent/worktree paths when they contain spaces", () => {
@@ -327,7 +291,7 @@ test("buildDelegatedPrompt includes parent/worktree paths when they contain spac
       created: true,
       mainCheckoutPath: "/tmp/my repo",
       worktreePath: "/tmp/my worktrees/test-worker",
-      taskBranch: "ezdg/test-worker",
+      taskBranch: "delegate/test-worker",
       baseBranch: "main",
     },
     automerge: true,
@@ -347,13 +311,13 @@ test("buildDelegatedPrompt omits merge instructions when automerge is false", ()
       created: true,
       mainCheckoutPath: "/tmp/repo",
       worktreePath: "/tmp/worktrees/test-worker",
-      taskBranch: "ezdg/test-worker",
+      taskBranch: "delegate/test-worker",
       baseBranch: "main",
     },
     automerge: false,
   });
   assert.ok(!prompt.includes("when your task is complete"));
-  assert.ok(!prompt.includes("worktree remove"));
+  assert.match(prompt, /worktree remove/);
 });
 
 test("buildDelegatedPrompt omits merge instructions when no worktree", () => {
@@ -411,7 +375,7 @@ test("getActiveDelegateState returns the latest active delegate state", () => {
       data: {
         active: true,
         workerId: "old-worker",
-        originPaneId: "%1",
+        tmuxSessionName: "old-session",
       },
     },
     {
@@ -420,8 +384,7 @@ test("getActiveDelegateState returns the latest active delegate state", () => {
       data: {
         active: true,
         workerId: "new-worker",
-        originPaneId: "%2",
-        originWindowId: "@3",
+        tmuxSessionName: "new-session",
       },
     },
   ];
@@ -429,8 +392,7 @@ test("getActiveDelegateState returns the latest active delegate state", () => {
   assert.deepEqual(getActiveDelegateState(branchEntries), {
     active: true,
     workerId: "new-worker",
-    originPaneId: "%2",
-    originWindowId: "@3",
+    tmuxSessionName: "new-session",
   });
 });
 
@@ -621,9 +583,8 @@ test("createForkedSessionFile writes delegate state for child-session inheritanc
     ];
     const delegateState = buildDelegateState({
       workerId: "worker-123",
-      targetMode: "pane",
-      originPaneId: "%1",
-      originWindowId: "@2",
+      targetMode: "session",
+      tmuxSessionName: "old-session",
     });
 
     const result = await createForkedSessionFile({
@@ -740,7 +701,7 @@ test("deriveWorkerName with explicit name and parentSessionName", () => {
 
 test("deriveWorkerName without options keeps backward compat", () => {
   const result = deriveWorkerName("implement auth middleware");
-  assert.equal(result.sessionName, "ezdg:implement auth middleware");
+  assert.equal(result.sessionName, "delegate:implement auth middleware");
 });
 
 test("deriveWorkerName with parentSessionName uses shorter task summary", () => {
@@ -828,7 +789,7 @@ test("resolveDelegatedLaunchCwd prefers the effective delegated cwd", () => {
   assert.equal(resolveDelegatedLaunchCwd("/tmp/parent", undefined), "/tmp/parent");
 });
 
-test("planDelegatedWorkspace creates and verifies a clean worker branch in its worktree", async () => {
+test("planDelegatedWorkspace creates and verifies a clean worker branch in its worktree", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-worktree-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -847,19 +808,19 @@ test("planDelegatedWorkspace creates and verifies a clean worker branch in its w
     });
 
     assert.equal(worktree.created, true);
-    assert.equal(worktree.taskBranch, "ezdg/branch-check");
+    assert.equal(worktree.taskBranch, "delegate/branch-check");
     assert.equal(worktree.verification?.verified, true);
     assert.match(worktree.effectiveCwd, /branch-check\/packages\/api$/);
 
     const verified = await verifyDelegatedWorkspace(worktree, worktree.effectiveCwd);
     assert.equal(verified.verified, true);
-    assert.equal(verified.branch, "ezdg/branch-check");
+    assert.equal(verified.branch, "delegate/branch-check");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("planDelegatedWorkspace bases the worker on the current delegator branch, not always main", async () => {
+test("planDelegatedWorkspace bases the worker on the current delegator branch, not always main", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-branch-base-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -882,16 +843,16 @@ test("planDelegatedWorkspace bases the worker on the current delegator branch, n
 
     assert.equal(worktree.created, true);
     assert.equal(worktree.baseBranch, "feature/delegator-base");
-    assert.equal(worktree.taskBranch, "ezdg/follow-parent-branch");
+    assert.equal(worktree.taskBranch, "delegate/follow-parent-branch");
 
     const branchResult = await execFileAsync("git", ["branch", "--show-current"], { cwd: worktree.effectiveCwd });
-    assert.equal(branchResult.stdout.trim(), "ezdg/follow-parent-branch");
+    assert.equal(branchResult.stdout.trim(), "delegate/follow-parent-branch");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("planDelegatedWorkspace rejects launching a same-repo delegate from a dirty parent checkout", async () => {
+test("planDelegatedWorkspace rejects launching a same-repo delegate from a dirty parent checkout", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-dirty-parent-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -917,7 +878,7 @@ test("planDelegatedWorkspace rejects launching a same-repo delegate from a dirty
   }
 });
 
-test("planDelegatedWorkspace rejects launching when the parent checkout has a merge in progress", async () => {
+test("planDelegatedWorkspace rejects launching when the parent checkout has a merge in progress", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-merge-parent-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -944,7 +905,7 @@ test("planDelegatedWorkspace rejects launching when the parent checkout has a me
   }
 });
 
-test("planDelegatedWorkspace rejects launching when the parent checkout has a rebase in progress", async () => {
+test("planDelegatedWorkspace rejects launching when the parent checkout has a rebase in progress", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-rebase-parent-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -971,29 +932,7 @@ test("planDelegatedWorkspace rejects launching when the parent checkout has a re
   }
 });
 
-test("buildDelegatedPrompt completion guidance points workers back to /ezdg finish", () => {
-  const prompt = buildDelegatedPrompt({
-    task: "implement feature",
-    workerName: "test-worker",
-    parentCwd: "/tmp/repo",
-    requestedCwd: "/tmp/repo/packages/api",
-    effectiveCwd: "/tmp/.pi-worktrees/repo/test-worker/packages/api",
-    worktree: {
-      created: true,
-      mainCheckoutPath: "/tmp/repo",
-      worktreePath: "/tmp/.pi-worktrees/repo/test-worker",
-      taskBranch: "ezdg/test-worker",
-      baseBranch: "feature/delegator-base",
-    },
-    automerge: true,
-  });
-
-  assert.match(prompt, /Parent session cwd: \/tmp\/repo/);
-  assert.match(prompt, /Requested cwd before worktree translation: \/tmp\/repo\/packages\/api/);
-  assert.match(prompt, /The delegator will handle merging via \/ezdg finish <worker-name>/);
-});
-
-test("worker commit lands on the worker branch and not the parent branch", async () => {
+test("worker commit lands on the worker branch and not the parent branch", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-worker-commit-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -1022,7 +961,7 @@ test("worker commit lands on the worker branch and not the parent branch", async
     const workerBranch = await gitStdout(worktree.effectiveCwd, ["branch", "--show-current"]);
 
     assert.equal(parentBranch, "feature/delegator-base");
-    assert.equal(workerBranch, "ezdg/commit-isolated");
+    assert.equal(workerBranch, "delegate/commit-isolated");
     assert.equal(parentHeadAfter, parentHeadBefore);
     assert.notEqual(workerHead, parentHeadBefore);
     await assert.rejects(() => readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"));
@@ -1031,53 +970,7 @@ test("worker commit lands on the worker branch and not the parent branch", async
   }
 });
 
-test("parent branch stays unchanged until the delegated finish command merges and cleans up", async () => {
-  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-merge-`));
-  const repoDir = join(tempRoot, "repo");
-
-  try {
-    await initTestRepo(repoDir);
-    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
-
-    const srcDir = join(repoDir, "packages", "api");
-    await execFileAsync("mkdir", ["-p", srcDir]);
-
-    const parentHeadBefore = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
-    const worktree = await planDelegatedWorkspace({
-      currentCwd: repoDir,
-      requestedCwd: srcDir,
-      createWorktree: true,
-      workerSlug: "finish-merge",
-    });
-
-    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "merge me\n", "utf8");
-    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
-    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: merge delegated work"]);
-
-    const parentHeadStillBeforeMerge = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
-    assert.equal(parentHeadStillBeforeMerge, parentHeadBefore);
-
-    const finishCommand = buildDelegatedFinishCommand(worktree);
-    await execFileAsync("bash", ["-lc", finishCommand], { cwd: worktree.effectiveCwd });
-
-    const parentHeadAfterMerge = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
-    assert.notEqual(parentHeadAfterMerge, parentHeadBefore);
-    assert.equal(await gitStdout(repoDir, ["branch", "--show-current"]), "feature/delegator-base");
-    assert.equal(await readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"), "merge me\n");
-    await assert.rejects(() => readFile(worktree.worktreePath, "utf8"));
-    const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.taskBranch}`], {
-      cwd: repoDir,
-    }).then(
-      () => true,
-      () => false,
-    );
-    assert.equal(branchExists, false);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test("sibling delegated workers do not see each other's uncommitted changes", async () => {
+test("sibling delegated workers do not see each other's uncommitted changes", { skip: !HAS_GIT }, async () => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-sibling-isolation-`));
   const repoDir = join(tempRoot, "repo");
 
@@ -1113,122 +1006,4 @@ test("sibling delegated workers do not see each other's uncommitted changes", as
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
-});
-
-test("delegated finish command refuses to merge and clean up when the parent branch becomes dirty later", async () => {
-  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-dirty-parent-`));
-  const repoDir = join(tempRoot, "repo");
-
-  try {
-    await initTestRepo(repoDir);
-    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
-
-    const srcDir = join(repoDir, "packages", "api");
-    await execFileAsync("mkdir", ["-p", srcDir]);
-
-    const worktree = await planDelegatedWorkspace({
-      currentCwd: repoDir,
-      requestedCwd: srcDir,
-      createWorktree: true,
-      workerSlug: "finish-dirty-parent",
-    });
-
-    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "needs clean parent\n", "utf8");
-    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
-    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: staged for later merge"]);
-
-    const parentHeadBefore = await gitStdout(repoDir, ["rev-parse", "HEAD"]);
-    await writeFile(join(repoDir, "README.md"), "# now dirty\n", "utf8");
-
-    const finishCommand = buildDelegatedFinishCommand(worktree);
-    await assert.rejects(() => execFileAsync("bash", ["-lc", finishCommand], { cwd: worktree.effectiveCwd }));
-
-    assert.equal(await gitStdout(repoDir, ["rev-parse", "HEAD"]), parentHeadBefore);
-    assert.equal(await gitStdout(repoDir, ["status", "--porcelain"]), "M README.md");
-    assert.equal(await readFile(join(worktree.worktreePath, "packages", "api", "delegate.txt"), "utf8"), "needs clean parent\n");
-    const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.taskBranch}`], {
-      cwd: repoDir,
-    }).then(
-      () => true,
-      () => false,
-    );
-    assert.equal(branchExists, true);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test("finishWorker merges, cleans up, deletes the session file, and marks the registry record cleaned", async () => {
-  const tempRoot = await mkdtemp(join(os.tmpdir(), `${DELEGATE_COMMAND}-finish-worker-`));
-  const repoDir = join(tempRoot, "repo");
-
-  try {
-    await initTestRepo(repoDir);
-    await runGit(repoDir, ["checkout", "-b", "feature/delegator-base"]);
-
-    const srcDir = join(repoDir, "packages", "api");
-    await execFileAsync("mkdir", ["-p", srcDir]);
-
-    const worktree = await planDelegatedWorkspace({
-      currentCwd: repoDir,
-      requestedCwd: srcDir,
-      createWorktree: true,
-      workerSlug: "finish-worker-helper",
-    });
-
-    await writeFile(join(worktree.effectiveCwd, "delegate.txt"), "finish helper\n", "utf8");
-    await runGit(worktree.effectiveCwd, ["add", "delegate.txt"]);
-    await runGit(worktree.effectiveCwd, ["commit", "-m", "feat: finish via helper"]);
-
-    const sessionFile = join(tempRoot, "worker-session.jsonl");
-    await writeFile(sessionFile, "{}\n", "utf8");
-    const registryPath = join(tempRoot, "registry.json");
-    const registry = {
-      version: 1,
-      scope: { key: repoDir, label: "repo" },
-      workers: [
-        {
-          id: "worker-1",
-          name: "finish-worker-helper",
-          slug: "finish-worker-helper",
-          launchedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          childSessionFile: sessionFile,
-          requestedCwd: srcDir,
-          effectiveCwd: worktree.effectiveCwd,
-          worktreePath: worktree.worktreePath,
-          taskBranch: worktree.taskBranch,
-          baseBranch: worktree.baseBranch,
-          targetMode: "pane",
-          targetId: "%1",
-          paneId: "%1",
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    };
-
-    const result = await finishWorker(
-      { scope: registry.scope, registry, registryPath },
-      { record: registry.workers[0], live: false },
-    );
-
-    assert.match(result.actions.join(", "), /merged/);
-    assert.equal(await readFile(join(repoDir, "packages", "api", "delegate.txt"), "utf8"), "finish helper\n");
-    await assert.rejects(() => readFile(sessionFile, "utf8"));
-    const loaded = await readWorkerRegistry({ registryPath, scopeKey: repoDir });
-    assert.ok(loaded.registry.workers[0].cleanedAt);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test("finishWorker refuses to finish a still-live worker", async () => {
-  await assert.rejects(
-    () =>
-      finishWorker(
-        { scope: { key: "/tmp/repo", label: "repo" }, registry: { version: 1, scope: { key: "/tmp/repo", label: "repo" }, workers: [], updatedAt: new Date().toISOString() }, registryPath: "/tmp/registry.json" },
-        { record: { id: "worker-1", name: "worker-one", taskBranch: "ezdg/worker-one" }, live: true },
-      ),
-    /still live/i,
-  );
 });
